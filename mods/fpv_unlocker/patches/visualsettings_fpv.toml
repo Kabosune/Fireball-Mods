@@ -1,0 +1,26 @@
+# Tune FPV motion blur parameters in commoncrc:/data/visualsettings (common.rpf @ 0x00643650)
+# for crisp on-foot first-person camera rotation.
+
+[[ops]]
+op = "set"
+key = "defaultmotionblur.fpv.strength"
+value = "0.05"
+reason = "Reduce default FPV motion blur strength from 0.2 to 0.05 for clearer on-foot visibility."
+
+[[ops]]
+op = "scale"
+key = "motionblur.fpv.MBLowCameraRotSpeedScale"
+factor = 0.5
+reason = "Halve low-speed FPV rotational blur (0.75 -> 0.375) during fine mouse/stick aiming."
+
+[[ops]]
+op = "scale"
+key = "motionblur.fpv.MBHighCameraRotSpeedScale"
+factor = 0.5
+reason = "Halve high-speed FPV rotational blur (0.3 -> 0.15) during rapid on-foot turns."
+
+[[ops]]
+op = "set"
+key = "defaultmotionblur.fpv.enabled"
+value = "1"
+reason = "Keep FPV motion blur pipeline enabled (verifies idempotent KV merge)."

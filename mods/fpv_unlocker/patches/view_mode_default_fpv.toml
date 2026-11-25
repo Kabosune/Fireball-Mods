@@ -1,0 +1,14 @@
+# Patch view-mode enum 0x4BFBE561 inside data.rpf @ 0x006C6000
+# STRUCT 0xBA6A67EF +0x010 (member 0x6B47AEA6, ENUM32 ref 0x4BFBE561):
+#   0 (ThirdPerson) -> 2 (FirstPerson)
+
+[[ops]]
+struct_hash = "0xBA6A67EF"
+instance_index = 0
+member_offset = "0x010"
+member_hash = "0x6B47AEA6"
+field_type = "ENUM32"
+enum_hash = "0x4BFBE561"
+expected_old = 0
+value = 2
+reason = "Switch view-mode default from 0 (ThirdPerson) to 2 (FirstPerson)."

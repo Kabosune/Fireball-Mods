@@ -1,0 +1,14 @@
+# Optional ADS Optic-Free Toggle Patch on data.rpf @ 0x006A2000
+# CAIConditionEquippedWeaponHasScope (0x67C44CEE):
+#   +0x010 (0x961FBEC1, ENUM32 ref 0x26D22C51): 0 -> -1 (Invalid / wildcard condition test)
+
+[[ops]]
+struct_hash = "0x67C44CEE"
+instance_index = 0
+member_offset = "0x010"
+member_hash = "0x961FBEC1"
+field_type = "ENUM32"
+enum_hash = "0x26D22C51"
+expected_old = 0
+value = -1
+reason = "Optional optic-free ADS test: switch scope-type enum gate from 0 to -1 (Invalid/any) on core scope condition."

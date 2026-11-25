@@ -1,0 +1,102 @@
+# Fireball-Mods Manifest — On-Foot First-Person View (FPV) Toggle & Unlocker
+# Strictly offline / single-player mod against GTA VI 1.0.2.1.
+
+[mod]
+id = "community.fpv_unlocker"
+name = "On-Foot First-Person View (FPV) Toggle & Unlocker"
+version = "0.2.0"
+authors = ["Kabosune", "Fireball-Mods Contributors"]
+license = "MIT OR Apache-2.0"
+target_game_version = "1.0.2.1"
+min_fireball_abi = 1
+required_tiers = [1, 2]
+description = "Unlocks and tunes GTA VI's shipped on-foot FirstPerson view mode (enum 0x4BFBE561 = 2) with XML/KV/PSO patches, runtime toggle + hold-to-peek, context-reset hold-guard, and full Fireball Mod Menu integration."
+
+[dependencies]
+requires = []
+load_after = []
+conflicts = []
+
+# Tier 1: XML merge on common.rpf @ 0x0003BA30 (CLassoDataManager full XML starts @ 0x0003B000;
+# page 1 @ 0x0003BA30 contains all 7 <UseFirstPersonCameraMatrix value="false" /> flags).
+[[patches.xml]]
+id = "lasso_fpv_camera_matrix"
+target = "common:/data/ai/lasso_data.meta"
+archive = "common.rpf"
+archive_offset = "0x0003B000"
+page_offset = "0x0003BA30"
+required_caps = ["FB_CAP_RAGE_FIDEVICE"]
+patch = "patches/lasso_fpv_matrix.toml"
+
+# Tier 1: Key-Value merge on commoncrc:/data/visualsettings (common.rpf full file starts @ 0x00640000;
+# page 1 @ 0x00643650 contains the 10-line motionblur.fpv.* / defaultmotionblur.fpv.* block).
+[[patches.kv]]
+id = "visualsettings_fpv_motionblur"
+target = "commoncrc:/data/visualsettings"
+archive = "common.rpf"
+archive_offset = "0x00640000"
+page_offset = "0x00643650"
+required_caps = ["FB_CAP_RAGE_FIDEVICE", "FB_CAP_RAGE_CRC_BYPASS"]
+patch = "patches/visualsettings_fpv.toml"
+
+# Tier 1: Binary PSO field patch on data.rpf @ 0x006C6000
+# STRUCT 0xBA6A67EF +0x010 (member 0x6B47AEA6, ENUM32 0x4BFBE561: 0=ThirdPerson -> 2=FirstPerson)
+[[patches.pso]]
+id = "camera_view_mode_firstperson"
+target = "platform:/data/camera/cam_freeroam.rpf#0x006C6000"
+archive = "data.rpf"
+archive_offset = "0x006C6000"
+root_struct_hash = "0x71D3ED59"
+required_caps = ["FB_CAP_RAGE_FIDEVICE", "FB_CAP_RAGE_CRC_BYPASS"]
+patch = "patches/view_mode_default_fpv.toml"
+
+# Tier 1: Binary PSO field patch on data.rpf @ 0x0063F000
+# Tunes camFreeCameraMetadata (0x21F13603) plus companion NearClip & DefaultFov structs (0xE47F06CA, 0x86191BE7)
+[[patches.pso]]
+id = "camera_freecam_nearclip_fov"
+target = "platform:/data/camera/cam_core.rpf#DEFAULT_FREE_CAMERA"
+archive = "data.rpf"
+archive_offset = "0x0063F000"
+root_struct_hash = "0x71D3ED59"
+required_caps = ["FB_CAP_RAGE_FIDEVICE", "FB_CAP_RAGE_CRC_BYPASS"]
+patch = "patches/freecam_fpv_tuning.toml"
+
+# Tier 1 (Optional): Binary PSO toggle patch on data.rpf @ 0x006A2000
+# Tests patching CAIConditionEquippedWeaponHasScope (0x67C44CEE) for optic-free ADS experimentation
+[[patches.pso]]
+id = "camera_ads_optic_free_toggle"
+target = "platform:/data/camera/cam_freeroam.rpf#0x006A2000"
+archive = "data.rpf"
+archive_offset = "0x006A2000"
+root_struct_hash = "0x71D3ED59"
+optional = true
+enabled = true
+required_caps = ["FB_CAP_RAGE_FIDEVICE", "FB_CAP_RAGE_CRC_BYPASS"]
+patch = "patches/ads_optic_free.toml"
+
+# Tier 2: Native Plugin — Hot-toggle & hold-to-peek ThirdPerson (0) <-> FirstPerson (2)
+# with hold-guard against on-foot context reset and Fireball Mod Menu integration.
+[[plugins]]
+id = "fpv_toggle"
+version = "0.2.0"
+entry = "plugins/fpv_toggle.py"
+native_path = "bin/fpv_toggle.fbplugin.dll"
+required_caps = [
+    "FB_CAP_FRAME_LIFECYCLE",
+    "FB_CAP_INPUT_EVENTS",
+    "FB_CAP_RAGE_SYMBOL_REG",
+    "FB_CAP_TITLE_MEM_RW",
+]
+
+[plugins.config]
+hotkey_vkey = 86                    # Win32 VK_V ('V', classic GTA camera toggle)
+hotkey_label = "V"
+third_person_mode = 0               # enum 0x4BFBE561::ThirdPerson
+cinematic_mode = 1                  # enum 0x4BFBE561::Cinematic
+first_person_mode = 2               # enum 0x4BFBE561::FirstPerson
+director_symbol = "rage::camGameplayDirector::s_Instance"
+view_mode_field_offset = 0          # Relative offset to active view_mode u32 (placeholder until VICTORY_WATCH RVA confirmed)
+hold_guard_enabled = true           # Re-assert mode 2 if game resets it while latched ON
+start_in_fpv = false                # Automatically latch FirstPerson on the first valid frame
+restore_on_shutdown = true          # Restore ThirdPerson on plugin shutdown if latched
+verbose_reassert_log = false        # Suppress per-frame hold-guard re-assert log spam unless enabled

@@ -1,0 +1,52 @@
+# Build outputs & compiled binaries (never commit)
+build/
+out/
+bin/
+obj/
+target/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.fbin
+*.gta6mod
+
+# Runtime user config & logs
+fireball_user_config.json
+fireball_user_config.json.tmp
+*.csv
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Never commit game assets, dumps, or keys
+*.rpf
+*.ttpf
+*.xvd
+*.ydr
+*.ydd
+*.yft
+*.ybn
+*.ytd
+*.ypt
+*.ysc
+*.awc
+*.bk2
+*.dds
+*.bin
+*.dmp
+*.key
+*.aes

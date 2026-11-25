@@ -1,0 +1,70 @@
+# Tune projection, clipping & free-cam pitch/FOV parameters in data.rpf @ 0x0063F000
+# - camFreeCameraMetadata (0x21F13603): MaxPitch, FovAcceleration, MaxFovSpeed
+# - Companion camera struct 0xE47F06CA: NearClip (0.1 -> 0.04m) & DefaultFov (45.0 -> 75.0 deg)
+# - camScriptedCameraMetadata (0x86191BE7): DefaultFov (70.0 -> 75.0 deg) on DEFAULT_SCRIPTED_CAMERA
+
+[[ops]]
+struct_hash = "0x21F13603"
+instance_index = 0
+member_offset = "0x060"
+member_hash = "0x43D07FEB"
+member_name = "FovAcceleration"
+field_type = "FLOAT"
+expected_old = 10.0
+value = 25.0
+reason = "Make free-cam/FPV FOV transitions more responsive."
+
+[[ops]]
+struct_hash = "0x21F13603"
+instance_index = 0
+member_offset = "0x064"
+member_hash = "0x87AFAFDB"
+member_name = "MaxFovSpeed"
+field_type = "FLOAT"
+expected_old = 20.0
+value = 45.0
+reason = "Raise max FOV zoom velocity for free-cam / FPV inspection."
+
+[[ops]]
+struct_hash = "0x21F13603"
+instance_index = 0
+member_offset = "0x068"
+member_hash = "0xFDFC7009"
+member_name = "MaxPitch"
+field_type = "FLOAT"
+expected_old = 89.5
+value = 89.9
+reason = "Allow near-vertical look pitch in free-cam / FPV."
+
+[[ops]]
+struct_hash = "0xE47F06CA"
+instance_index = 0
+member_offset = "0x038"
+member_hash = "0x4F054B32"
+member_name = "NearClip"
+field_type = "FLOAT"
+expected_old = 0.1
+value = 0.04
+reason = "Tighten NearClip from 0.10m to 0.04m to prevent close weapon/interior clipping in FPV."
+
+[[ops]]
+struct_hash = "0xE47F06CA"
+instance_index = 0
+member_offset = "0x0D4"
+member_hash = "0x52F7E2E8"
+member_name = "DefaultFov"
+field_type = "FLOAT"
+expected_old = 45.0
+value = 75.0
+reason = "Widen DefaultFov from 45.0 deg to 75.0 deg for comfortable PC on-foot FPV."
+
+[[ops]]
+struct_hash = "0x86191BE7"
+instance_index = 0
+member_offset = "0x030"
+member_hash = "0x52F7E2E8"
+member_name = "DefaultFov"
+field_type = "FLOAT"
+expected_old = 70.0
+value = 75.0
+reason = "Align DEFAULT_SCRIPTED_CAMERA DefaultFov (70.0 -> 75.0 deg) with FPV baseline."

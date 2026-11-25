@@ -1,0 +1,70 @@
+# Fireball-Mods Manifest — Time & Weather Control (single player)
+# Tier 2 runtime plugin: set / step / pause / scale the clock and switch / blend / lock the weather
+# through guarded title memory with full Fireball Mod Menu integration. Strictly offline / single-player.
+#
+# STATUS: the addresses and field layouts below are PLACEHOLDERS until the live scan
+# (research repo: tools/state_scan_diff.py, docs/runtime_clock_weather.md) confirms them by
+# write test. The symbols are named here and given RVAs in VIctory's victory.toml:
+#   [fireball.symbols]
+#   "fb.clock"   = 0x...   # first clock field
+#   "fb.weather" = 0x...   # weather block (prev/next/interp offsets below are relative to it)
+
+[mod]
+id = "community.time_weather_control"
+name = "Time & Weather Control"
+version = "0.2.0"
+authors = ["Kabosune", "Fireball-Mods Contributors"]
+license = "MIT OR Apache-2.0"
+target_game_version = "1.0.2.1"
+min_fireball_abi = 1
+required_tiers = [2]
+description = "Controller-friendly Mod Menu controls and conflict-free keyboard/gamepad hotkeys to set, step, pause, and scale the game clock, and to switch, blend, and lock any of the 168 WeatherTypes."
+
+[dependencies]
+requires = []
+load_after = []
+conflicts = []
+
+[[plugins]]
+id = "time_weather"
+version = "0.2.0"
+entry = "plugins/time_weather.py"
+native_path = "bin/time_weather.fbplugin.dll"
+required_caps = [
+    "FB_CAP_FRAME_LIFECYCLE",
+    "FB_CAP_INPUT_EVENTS",
+    "FB_CAP_RAGE_SYMBOL_REG",
+    "FB_CAP_TITLE_MEM_RW",
+]
+
+[plugins.config]
+# Clock (placeholder until confirmed): layout is one of
+#   "h,m,s" | "s,m,h" | "h,m" | "m,h" | "minutes_of_day" | "seconds_of_day" | "f32_hours"
+clock_symbol = "fb.clock"
+clock_offset = 0
+clock_layout = "h,m,s"
+clock_ms_per_game_minute = 2000      # GTA V's rate; replace with state_scan_diff's measured value
+# Weather (placeholder until confirmed): "hash" (joaat_lower of the WeatherTypes name) or "index"
+weather_symbol = "fb.weather"
+weather_kind = "hash"
+weather_hash_variant = "joaat_lower" # or "joaat" (case kept)
+weather_prev_offset = 0
+weather_next_offset = 4
+weather_interp_offset = 8
+weather_has_interp = true
+weather_apply_mode = "instant"       # "instant" or "blend" for weather_prev / weather_next hotkeys
+weather_blend_ms = 10000
+weather_lock_on_set = true
+# From: python tools/weather_time_inspect.py --out D:\GTA6-work\T033 hashes --json
+weather_list_path = 'D:\GTA6-work\T033\weather_types.txt'
+# Every write + read-back (now and verify_frames later) as CSV
+log_path = 'D:\GTA6-work\time_weather\time_weather_log.csv'
+verify_frames = 30
+# Hotkeys (Win32 virtual-key codes; also remappable via Fireball Mod Menu)
+key_hour_up = 0xDD        # ]
+key_hour_down = 0xDB      # [
+key_pause = 0xDC          # \  (Ctrl+\ toggles weather lock)
+key_weather_prev = 0xBA   # ;
+key_weather_next = 0xDE   # '
+key_window = 0x77         # F8: opt-in legacy control window
+ui_enabled = false        # Legacy Win32 F8 window is opt-in (use Fireball Mod Menu by default)
