@@ -92,8 +92,42 @@ set_target_properties(time_weather_plugin PROPERTIES
 fb_apply_strict_c11(time_weather_plugin)
 
 # ---------------------------------------------------------------------------
-# 3. Native Integration Test Harness (strictly against public SDK headers)
+# 3. mods/fpv_drone -> fpv_drone.fbplugin.dll (runtime libfpv ABI v1 loader)
 # ---------------------------------------------------------------------------
+add_library(fpv_drone_plugin SHARED
+    mods/fpv_drone/native/fpv_drone.c
+    mods/fpv_drone/native/fpv_drone_audio.c
+    mods/fpv_drone/native/fpv_drone_osd.c
+)
+target_compile_definitions(fpv_drone_plugin PRIVATE FB_BUILD_DLL)
+target_include_directories(fpv_drone_plugin PRIVATE
+    "${FIREBALL_SDK_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/fpv_drone/native"
+)
+if(WIN32)
+    target_link_libraries(fpv_drone_plugin PRIVATE winmm user32 gdi32)
+endif()
+set_target_properties(fpv_drone_plugin PROPERTIES
+    OUTPUT_NAME "fpv_drone.fbplugin"
+    PREFIX ""
+)
+fb_apply_strict_c11(fpv_drone_plugin)
+
+# ---------------------------------------------------------------------------
+# 4. Native Integration Test Harness (strictly against public SDK headers)
+# ---------------------------------------------------------------------------
+add_library(mock_libfpv SHARED
+    tests/mock_libfpv.c
+)
+target_include_directories(mock_libfpv PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/fpv_drone/native"
+)
+set_target_properties(mock_libfpv PROPERTIES
+    OUTPUT_NAME "mock_libfpv"
+    PREFIX ""
+)
+fb_apply_strict_c11(mock_libfpv)
+
 add_executable(fireball_mods_integration_test
     tests/mods_integration_test.c
 )
@@ -101,17 +135,21 @@ target_include_directories(fireball_mods_integration_test PRIVATE "${FIREBALL_SD
 add_dependencies(fireball_mods_integration_test
     fpv_toggle_plugin
     time_weather_plugin
+    fpv_drone_plugin
+    mock_libfpv
 )
 fb_apply_strict_c11(fireball_mods_integration_test)
 
 # ---------------------------------------------------------------------------
-# 4. CTest Integration
+# 5. CTest Integration
 # ---------------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
     set(_itest_args
         --fpv $<TARGET_FILE:fpv_toggle_plugin>
         --time-weather $<TARGET_FILE:time_weather_plugin>
+        --fpv-drone $<TARGET_FILE:fpv_drone_plugin>
+        --mock-libfpv $<TARGET_FILE:mock_libfpv>
     )
     if(FIREBALL_CORE_DLL)
         list(APPEND _itest_args --core "${FIREBALL_CORE_DLL}")

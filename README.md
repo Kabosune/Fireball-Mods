@@ -13,6 +13,7 @@ Standalone, strictly offline / single-player mods for *Grand Theft Auto VI* (Pro
 - `CMakeLists.txt` — MSVC VS 2022 x64 CMake build (`/std:c11 /W4 /WX`, CTest enabled) locating `FIREBALL_CORE_DIR` (cache or env var, default `C:/dev/fireball-core`).
 - `mods/fpv_unlocker/` — **On-Foot First-Person View (FPV) Toggle & Unlocker** (`fpv_toggle.fbplugin.dll`, XML/KV/PSO patches, reference Python state machine). See [mods/fpv_unlocker/README.md](mods/fpv_unlocker/README.md).
 - `mods/time_weather_control/` — **Time & Weather Control** (`time_weather.fbplugin.dll`, controller-friendly Mod Menu clock/weather controls, opt-in legacy F8 window, reference Python state machine). See [mods/time_weather_control/README.md](mods/time_weather_control/README.md).
+- `mods/fpv_drone/` — **FPV Quadcopter Drone (`libfpv` / Betaflight-in-the-loop)** (`fpv_drone.fbplugin.dll`, pure C11 dynamic runtime loader for [hammerill/libfpv](https://github.com/hammerill/libfpv) ABI v1, RAGE 9 Z-up coordinates, multi-view camera sync, stereo `waveOut` motor audio, opt-in live MAX7456 OSD preview window, reference Python state machine). See [mods/fpv_drone/README.md](mods/fpv_drone/README.md).
 - `scripts/stage_mods.py` — Stdlib-only Python helper to validate manifests, stage built `*.fbplugin.dll` + mod manifests into `--out` (default `D:\GTA6-work\fireball-mods-stage`), and optionally invoke `fireball_cli.py` to pack `.gta6mod` archives or compile `fireball_bundle.fbin`.
 - `tests/mods_integration_test.c` — Native C11 CTest harness testing both plugins standalone (v1 fallback), mock Menu API sync & zero binding conflicts, and end-to-end inside `fireball_core.dll` (`FIREBALL_HEADLESS=1`).
 - `tests/test_mods.py` — Offline Python `unittest` suite validating manifests, `scripts/stage_mods.py`, and reference Python plugin state machines.
@@ -38,11 +39,12 @@ python -B scripts/stage_mods.py
 
 ## Default Controls & Chords
 
-All default keyboard and XInput gamepad chord bindings are conflict-free across `fireball.core`, `community.fpv_unlocker`, and `community.time_weather_control`, and can be remapped live in the in-game Mod Menu (`fireball_user_config.json`):
+All default keyboard and XInput gamepad chord bindings are conflict-free across `fireball.core`, `community.fpv_unlocker`, `community.time_weather_control`, and `community.fpv_drone`, and can be remapped live in the in-game Mod Menu (`fireball_user_config.json`):
 
 | Mod | Action | Trigger | Default Keyboard | Default Gamepad |
 | :--- | :--- | :--- | :--- | :--- |
 | `fireball.core` | Toggle Mod Menu | Press | `F1` | `LB + View` |
+| `fireball.core` | Toggle Command Console | Press | `` ` `` (`~`) | Unbound |
 | `community.fpv_unlocker` | Toggle First-Person (`toggle_fpv`) | Press | `V` | `LB + R3` |
 | `community.fpv_unlocker` | Peek First-Person (`peek_fpv`) | Hold | `Alt + V` | `LB + L3` |
 | `community.time_weather_control` | Clock +1 Hour (`hour_up`) | Press | `]` | `LB + DPad Up` |
@@ -52,6 +54,11 @@ All default keyboard and XInput gamepad chord bindings are conflict-free across 
 | `community.time_weather_control` | Next Weather (`weather_next`) | Press | `'` | `LB + DPad Right` |
 | `community.time_weather_control` | Lock / Unlock Weather (`toggle_weather_lock`) | Press | `Ctrl + \` | `LB + Y` |
 | `community.time_weather_control` | Legacy Control Window (`toggle_window`, opt-in `ui_enabled = true`) | Press | `F8` | Unbound |
+| `community.fpv_drone` | Launch / Recall Drone (`toggle_drone`) | Press | `F7` | `LB + X` |
+| `community.fpv_drone` | Cycle Drone Camera View (`cycle_view`) | Press | `Shift + V` | `LB + B` |
+| `community.fpv_drone` | Repair & Respawn Drone (`respawn_drone`) | Press | `Ctrl + R` | `LB + A` |
+| `community.fpv_drone` | Toggle Pilot View (`toggle_pilot_view`) | Press | `Ctrl + F` | `RB + View` |
+| `community.fpv_drone` | Toggle `libfpv` Overlay (`toggle_overlay`) | Press | `F9` | `RB + Start` |
 
 ## Adding a New Mod
 

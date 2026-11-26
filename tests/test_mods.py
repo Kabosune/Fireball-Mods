@@ -83,7 +83,14 @@ class TestFireballModsOffline(unittest.TestCase):
     def test_manifests_valid_and_unique(self) -> None:
         validated = stage_mods.validate_all_mods(MODS_DIR)
         ids = {m["mod_id"] for m in validated}
-        self.assertEqual(ids, {"community.fpv_unlocker", "community.time_weather_control"})
+        self.assertEqual(
+            ids,
+            {
+                "community.fpv_unlocker",
+                "community.time_weather_control",
+                "community.fpv_drone",
+            },
+        )
 
         with open(os.path.join(MODS_DIR, "fpv_unlocker", "mod.toml"), "rb") as f:
             fpv_toml = tomllib.load(f)
@@ -98,6 +105,14 @@ class TestFireballModsOffline(unittest.TestCase):
         tw_cfg = tw_toml["plugins"][0]["config"]
         self.assertFalse(tw_cfg["ui_enabled"])
         self.assertEqual(tw_cfg["weather_apply_mode"], "instant")
+
+        with open(os.path.join(MODS_DIR, "fpv_drone", "mod.toml"), "rb") as f:
+            drone_toml = tomllib.load(f)
+        drone_cfg = drone_toml["plugins"][0]["config"]
+        self.assertEqual(drone_cfg["camera_layout"], "mat34_fov")
+        self.assertFalse(drone_cfg["osd_window_enabled"])
+        self.assertFalse(drone_cfg["enable_lens_distortion"])
+        self.assertEqual(drone_cfg["configurator_port"], 5761)
 
     def test_stage_mods_cli_help_and_staging(self) -> None:
         proc = subprocess.run(
@@ -118,12 +133,16 @@ class TestFireballModsOffline(unittest.TestCase):
             out_dir = os.path.join(td, "stage")
             os.makedirs(build_dir, exist_ok=True)
             # Create dummy DLL placeholders in temp dir only
-            for name in ("fpv_toggle.fbplugin.dll", "time_weather.fbplugin.dll"):
+            for name in (
+                "fpv_toggle.fbplugin.dll",
+                "time_weather.fbplugin.dll",
+                "fpv_drone.fbplugin.dll",
+            ):
                 with open(os.path.join(build_dir, name), "wb") as wf:
                     wf.write(b"MZ_TEST")
 
             rep = stage_mods.stage_mods(MODS_DIR, build_dir, out_dir, game_dir=game_dir)
-            self.assertEqual(len(rep["mods"]), 2)
+            self.assertEqual(len(rep["mods"]), 3)
             for m in rep["mods"]:
                 self.assertEqual(len(m["staged_dlls"]), 1)
                 self.assertTrue(os.path.isfile(m["staged_dlls"][0]))
@@ -251,6 +270,65 @@ class TestFireballModsOffline(unittest.TestCase):
             core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=4, dt_sec=1 / 30))
             self.assertFalse(plugin.weather_locked)
             plugin.fb_plugin_shutdown()
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(CORE_DIR, "fireball")), "FIREBALL_CORE_DIR/fireball not available")
+    def test_reference_fpv_drone_plugin_state_machine(self) -> None:
+        import struct
+        from fireball.abi import (
+            FB_DEV_KEYBOARD,
+            FB_EVENT_FRAME_BEGIN,
+            FB_EVENT_INPUT_EVENT,
+            FB_INPUT_PRESS,
+            FB_OK,
+            FrameEvent,
+            InputEvent,
+        )
+
+        drone_mod = _load_module_from_path(
+            "fb_mods_fpv_drone",
+            os.path.join(MODS_DIR, "fpv_drone", "plugins", "fpv_drone.py"),
+        )
+        plugin = drone_mod.create_plugin()
+        core = _MiniCore(
+            {
+                "fb.drone_camera": 0x4000,
+                "fb.drone_camera_override": 0x4100,
+                "fb.pilot_pos": 0x4200,
+                "fb.streaming_focus": 0x4300,
+            },
+            {"community.fpv_drone": {"camera_layout": "mat34_fov"}},
+        )
+        for off in range(0x4000, 0x4040, 4):
+            core.mem[off] = 0
+        core.mem[0x4100] = 0
+        for i, val in enumerate((10.0, 20.0, 2.0, 0.0)):
+            core.mem[0x4200 + 4 * i] = struct.unpack("<I", struct.pack("<f", val))[0]
+        for off in range(0x4300, 0x4320, 4):
+            core.mem[off] = 0
+
+        self.assertEqual(plugin.fb_plugin_init(core), FB_OK)
+        # F7 launches drone
+        self.assertEqual(core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x76, FB_INPUT_PRESS, 0)), 1)
+        self.assertTrue(plugin.drone_active)
+        # 50 ms settle guard blocks first frames
+        core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=1, dt_sec=0.02))
+        self.assertEqual(core.mem[0x4100], 0)
+        self.assertEqual(plugin.camera_writes, 0)
+        # After >= 50 ms, camera override + mat34_fov + focus written
+        core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=2, dt_sec=0.06))
+        self.assertEqual(core.mem[0x4100], 1)
+        self.assertEqual(plugin.camera_writes, 1)
+        # Ctrl+F switches to Pilot view and clears camera override
+        self.assertEqual(
+            core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x46, FB_INPUT_PRESS, drone_mod.FB_MOD_CTRL)),
+            1,
+        )
+        self.assertEqual(plugin.view, drone_mod.FPV_VIEW_PILOT)
+        self.assertEqual(core.mem[0x4100], 0)
+        # F7 recalls drone
+        self.assertEqual(core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x76, FB_INPUT_PRESS, 0)), 1)
+        self.assertFalse(plugin.drone_active)
+        plugin.fb_plugin_shutdown()
 
 
 if __name__ == "__main__":

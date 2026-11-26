@@ -83,10 +83,16 @@ static int load_plugin_dll(const wchar_t* path, loaded_plugin_t* out) {
 /* Shared mock title memory & helpers                                        */
 /* ------------------------------------------------------------------------- */
 
-#define MOCK_MEM_SIZE 4096u
-#define OFF_CAM       0x000u
-#define OFF_CLOCK     0x100u
-#define OFF_WEATHER   0x200u
+#define MOCK_MEM_SIZE       4096u
+#define OFF_CAM             0x000u
+#define OFF_CLOCK           0x100u
+#define OFF_WEATHER         0x200u
+#define OFF_DRONE_CAM       0x300u
+#define OFF_DRONE_CAM_OV    0x380u
+#define OFF_DRONE_PILOT     0x3A0u
+#define OFF_DRONE_FOCUS     0x3C0u
+#define OFF_DRONE_POSE      0x400u
+#define OFF_DRONE_WIND      0x440u
 
 #define H_W0 0xF5A87B65u
 #define H_W1 0x614A1F91u
@@ -95,8 +101,9 @@ static int load_plugin_dll(const wchar_t* path, loaded_plugin_t* out) {
 static uint8_t       g_mem[MOCK_MEM_SIZE];
 static char          g_cfg_fpv[4096];
 static char          g_cfg_tw[4096];
-static fb_event_fn_t g_listeners[8][4];
-static void*         g_listener_ctx[8][4];
+static char          g_cfg_drone[4096];
+static fb_event_fn_t g_listeners[8][8];
+static void*         g_listener_ctx[8][8];
 static int           g_listener_count[8];
 static uint64_t      g_frame_idx = 0;
 static int           g_reassert_log_hits = 0;
@@ -116,6 +123,12 @@ static float peek_f32(uint32_t off) {
     float f = 0.0f;
     memcpy(&f, &bits, 4);
     return f;
+}
+
+static void poke_f32(uint32_t off, float f) {
+    uint32_t bits = 0u;
+    memcpy(&bits, &f, 4);
+    poke_u32(off, bits);
 }
 
 static fb_input_event_v1_t make_ev(uint32_t dev, uint32_t code, uint32_t action, uint32_t mods, uint64_t ts_us) {
@@ -144,6 +157,8 @@ static int mock_config_get_json(const char* mod_id, char* buf, size_t cap) {
         src = g_cfg_fpv;
     } else if (mod_id && strcmp(mod_id, "community.time_weather_control") == 0 && g_cfg_tw[0]) {
         src = g_cfg_tw;
+    } else if (mod_id && strcmp(mod_id, "community.fpv_drone") == 0 && g_cfg_drone[0]) {
+        src = g_cfg_drone;
     }
     if (!src) {
         return FB_ERR_NOT_FOUND;
@@ -157,7 +172,7 @@ static int mock_config_get_json(const char* mod_id, char* buf, size_t cap) {
 }
 
 static int mock_register_listener(uint32_t event_id, fb_event_fn_t fn, void* ctx) {
-    if (event_id >= 8u || g_listener_count[event_id] >= 4) {
+    if (event_id >= 8u || g_listener_count[event_id] >= 8) {
         return FB_ERR_INVALID_ARG;
     }
     int slot = g_listener_count[event_id]++;
@@ -205,6 +220,24 @@ static void* mock_resolve_symbol(const char* sym) {
     }
     if (strcmp(sym, "fb.weather") == 0) {
         return g_mem + OFF_WEATHER;
+    }
+    if (strcmp(sym, "fb.drone_camera") == 0) {
+        return g_mem + OFF_DRONE_CAM;
+    }
+    if (strcmp(sym, "fb.drone_camera_override") == 0) {
+        return g_mem + OFF_DRONE_CAM_OV;
+    }
+    if (strcmp(sym, "fb.pilot_pos") == 0) {
+        return g_mem + OFF_DRONE_PILOT;
+    }
+    if (strcmp(sym, "fb.streaming_focus") == 0) {
+        return g_mem + OFF_DRONE_FOCUS;
+    }
+    if (strcmp(sym, "fb.drone_pose") == 0) {
+        return g_mem + OFF_DRONE_POSE;
+    }
+    if (strcmp(sym, "fb.wind") == 0) {
+        return g_mem + OFF_DRONE_WIND;
     }
     return NULL;
 }
@@ -276,7 +309,13 @@ static int file_contains_str(const char* path, const char* needle) {
 /* 1. Standalone v1 Fallback Tests (NO fb_plugin_register_menu)              */
 /* ------------------------------------------------------------------------- */
 
-static void test_standalone_v1(const wchar_t* fpv_dll, const wchar_t* tw_dll, const char* tmp_dir) {
+static void test_standalone_v1(
+    const wchar_t* fpv_dll,
+    const wchar_t* tw_dll,
+    const wchar_t* drone_dll,
+    const wchar_t* mock_libfpv_dll,
+    const char*    tmp_dir)
+{
     printf("[1] Testing standalone v1 fallback (without fb_plugin_register_menu)...\n");
 
     /* --- 1a. fpv_toggle v1 --- */
@@ -425,14 +464,132 @@ static void test_standalone_v1(const wchar_t* fpv_dll, const wchar_t* tw_dll, co
         CHECK(file_contains_str(log_path, ",weather_set,weather.next,"));
         FreeLibrary(tw.mod);
     }
+
+    /* --- 1c. fpv_drone v1 (graceful missing-DLL standby + mock libfpv runtime) --- */
+    loaded_plugin_t drone;
+    CHECK(load_plugin_dll(drone_dll, &drone));
+    if (drone.mod) {
+        fb_plugin_info_v1_t info;
+        memset(&info, 0, sizeof(info));
+        CHECK(drone.query(&info) == FB_OK);
+        CHECK(info.abi_version == FB_PLUGIN_ABI_VERSION);
+        CHECK(strcmp(info.mod_id, "community.fpv_drone") == 0);
+        CHECK(strcmp(info.plugin_id, "fpv_drone") == 0);
+
+        /* Standby when libfpv.dll path does not exist (no crash, clean shutdown) */
+        SetEnvironmentVariableW(L"FIREBALL_HEADLESS", L"1");
+        SetEnvironmentVariableW(L"LIBFPV_DLL", NULL);
+        memset(g_mem, 0, sizeof(g_mem));
+        mock_reset_bus();
+        snprintf(g_cfg_drone, sizeof(g_cfg_drone),
+                 "{\"libfpv_dll_path\":\"Z:\\\\nonexistent\\\\missing_libfpv.dll\",\"audio_enabled\":false}");
+        fb_core_services_v1_t svc = make_mock_services();
+        CHECK(drone.init(&svc) == FB_OK);
+        fb_input_event_v1_t ev = make_ev(FB_DEV_KEYBOARD, 0x76u /* F7 */, FB_INPUT_PRESS, FB_MOD_NONE, 1);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(1.0 / 30.0);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
+        drone.shutdown();
+
+        /* Active flight with mock_libfpv.dll (mat34_fov) */
+        char mock_path_a[520], jmock[1040];
+        WideCharToMultiByte(CP_UTF8, 0, mock_libfpv_dll, -1, mock_path_a, (int)sizeof(mock_path_a), NULL, NULL);
+        json_escape_path(jmock, sizeof(jmock), mock_path_a);
+        snprintf(g_cfg_drone, sizeof(g_cfg_drone),
+                 "{\"libfpv_dll_path\":\"%s\",\"camera_layout\":\"mat34_fov\",\"audio_enabled\":false,\"osd_window_enabled\":false}",
+                 jmock);
+
+        memset(g_mem, 0, sizeof(g_mem));
+        mock_reset_bus();
+        poke_f32(OFF_DRONE_PILOT + 0u, 10.0f);
+        poke_f32(OFF_DRONE_PILOT + 4u, 20.0f);
+        poke_f32(OFF_DRONE_PILOT + 8u, 2.0f);
+        poke_f32(OFF_DRONE_PILOT + 12u, 0.0f);
+
+        CHECK(drone.init(&svc) == FB_OK);
+        /* F7 launches drone */
+        ev = make_ev(FB_DEV_KEYBOARD, 0x76u /* F7 */, FB_INPUT_PRESS, FB_MOD_NONE, 10);
+        CHECK(mock_emit_input(&ev) == 1);
+        /* 50ms settle guard: first 20ms frame must NOT write camera override yet */
+        mock_emit_frame(0.02);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
+        /* Next 60ms frame crosses 50ms settle -> writes FPV camera (FOV=105), override=1, focus, pose */
+        mock_emit_frame(0.06);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 1u);
+        CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x30u) - 105.0f) < 1e-2f);
+        CHECK(fabsf(peek_f32(OFF_DRONE_FOCUS + 0x00u) - 10.0f) < 1e-2f);
+        CHECK(fabsf(peek_f32(OFF_DRONE_FOCUS + 0x04u) - 22.0f) < 1e-2f); /* spawned 2m north (+Y) */
+
+        /* Enter arms + W climbs + consumed while flying */
+        ev = make_ev(FB_DEV_KEYBOARD, VK_RETURN, FB_INPUT_PRESS, FB_MOD_NONE, 15);
+        CHECK(mock_emit_input(&ev) == 1);
+        ev = make_ev(FB_DEV_KEYBOARD, 'W', FB_INPUT_PRESS, FB_MOD_NONE, 16);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.10);
+        CHECK(peek_f32(OFF_DRONE_POSE + 0x08u) > 2.5f); /* climbed above 2.25m spawn */
+        ev = make_ev(FB_DEV_KEYBOARD, 'W', FB_INPUT_RELEASE, FB_MOD_NONE, 17);
+        (void)mock_emit_input(&ev);
+
+        /* Shift+V cycles FPV -> Chase (FOV=75) -> LOS (FOV=60) -> Pilot (override=0) */
+        ev = make_ev(FB_DEV_KEYBOARD, 'V', FB_INPUT_PRESS, FB_MOD_SHIFT, 20);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x30u) - 75.0f) < 1e-2f);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x30u) - 60.0f) < 1e-2f);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u); /* Pilot view hands camera back */
+
+        /* Ctrl+F toggles back to last drone view (LOS) */
+        ev = make_ev(FB_DEV_KEYBOARD, 'F', FB_INPUT_PRESS, FB_MOD_CTRL, 25);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 1u);
+
+        /* Ctrl+R repairs & respawns back to z = 2.25m */
+        ev = make_ev(FB_DEV_KEYBOARD, 'R', FB_INPUT_PRESS, FB_MOD_CTRL, 30);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        CHECK(fabsf(peek_f32(OFF_DRONE_POSE + 0x08u) - 2.25f) < 1e-2f);
+
+        /* F9 toggles overlay */
+        ev = make_ev(FB_DEV_KEYBOARD, 0x78u /* F9 */, FB_INPUT_PRESS, FB_MOD_NONE, 35);
+        CHECK(mock_emit_input(&ev) == 1);
+
+        /* F7 recalls drone -> clears override and restores streaming focus to pilot */
+        ev = make_ev(FB_DEV_KEYBOARD, 0x76u /* F7 */, FB_INPUT_PRESS, FB_MOD_NONE, 40);
+        CHECK(mock_emit_input(&ev) == 1);
+        CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
+        CHECK(fabsf(peek_f32(OFF_DRONE_FOCUS + 0x04u) - 20.0f) < 1e-2f);
+        drone.shutdown();
+
+        /* Verify pos_euler_fov camera layout */
+        snprintf(g_cfg_drone, sizeof(g_cfg_drone),
+                 "{\"libfpv_dll_path\":\"%s\",\"camera_layout\":\"pos_euler_fov\",\"audio_enabled\":false}",
+                 jmock);
+        memset(g_mem, 0, sizeof(g_mem));
+        mock_reset_bus();
+        CHECK(drone.init(&svc) == FB_OK);
+        ev = make_ev(FB_DEV_KEYBOARD, 0x76u, FB_INPUT_PRESS, FB_MOD_NONE, 50);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(0.02);
+        mock_emit_frame(0.06);
+        CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x18u) - 105.0f) < 1e-2f);
+        CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x1Cu) - 0.05f) < 1e-3f);
+        drone.shutdown();
+
+        FreeLibrary(drone.mod);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
 /* 2. Mock Menu API: Zero Conflicts & Bidirectional Sync                     */
 /* ------------------------------------------------------------------------- */
 
-#define MAX_MOCK_SETTINGS 64
-#define MAX_MOCK_ACTIONS  32
+#define MAX_MOCK_SETTINGS 128
+#define MAX_MOCK_ACTIONS  64
 
 typedef struct mock_setting_slot {
     char                   mod_id[64];
@@ -607,7 +764,13 @@ static void mmenu_fire_action(const char* mod_id, const char* aid, int active) {
     }
 }
 
-static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wchar_t* tw_dll, const char* tmp_dir) {
+static void test_mock_menu_sync_and_conflicts(
+    const wchar_t* fpv_dll,
+    const wchar_t* tw_dll,
+    const wchar_t* drone_dll,
+    const wchar_t* mock_libfpv_dll,
+    const char*    tmp_dir)
+{
     printf("[2] Testing Menu API registration, bidirectional sync & zero default binding conflicts...\n");
 
     g_mset_count = 0;
@@ -615,7 +778,7 @@ static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wcha
     memset(g_mem, 0, sizeof(g_mem));
     mock_reset_bus();
 
-    /* Seed fireball.core's default Toggle Mod Menu action (F1 / LB + View) */
+    /* Seed fireball.core's default actions: Toggle Mod Menu (F1 / LB + View) & Toggle Console (` / Unbound) */
     fb_action_desc_v1_t core_act;
     memset(&core_act, 0, sizeof(core_act));
     core_act.struct_size = (uint32_t)sizeof(core_act);
@@ -627,6 +790,16 @@ static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wcha
     core_act.default_key.modifiers = FB_MOD_NONE;
     core_act.default_pad.code = FB_PAD_BACK;
     core_act.default_pad.modifiers = FB_PAD_LEFT_SHOULDER;
+    CHECK(mmenu_register_action(&core_act) == FB_OK);
+
+    memset(&core_act, 0, sizeof(core_act));
+    core_act.struct_size = (uint32_t)sizeof(core_act);
+    core_act.trigger_mode = FB_TRIGGER_PRESS;
+    core_act.mod_id = "fireball.core";
+    core_act.action_id = "toggle_console";
+    core_act.consume_input = 1;
+    core_act.default_key.code = 0xC0u; /* ` / ~ */
+    core_act.default_key.modifiers = FB_MOD_NONE;
     CHECK(mmenu_register_action(&core_act) == FB_OK);
 
     /* Weather list for time_weather */
@@ -651,12 +824,20 @@ static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wcha
     poke_u32(OFF_WEATHER, H_W0);
     poke_u32(OFF_WEATHER + 4u, H_W0);
 
-    loaded_plugin_t fpv, tw;
+    loaded_plugin_t fpv, tw, drone;
     CHECK(load_plugin_dll(fpv_dll, &fpv));
     CHECK(load_plugin_dll(tw_dll, &tw));
-    if (!fpv.mod || !tw.mod) {
+    CHECK(load_plugin_dll(drone_dll, &drone));
+    if (!fpv.mod || !tw.mod || !drone.mod) {
         return;
     }
+
+    char mock_path_a[520], jmock[1040];
+    WideCharToMultiByte(CP_UTF8, 0, mock_libfpv_dll, -1, mock_path_a, (int)sizeof(mock_path_a), NULL, NULL);
+    json_escape_path(jmock, sizeof(jmock), mock_path_a);
+    snprintf(g_cfg_drone, sizeof(g_cfg_drone),
+             "{\"libfpv_dll_path\":\"%s\",\"audio_enabled\":false,\"osd_window_enabled\":false}",
+             jmock);
 
     fb_core_services_v1_t svc = make_mock_services();
     fb_menu_api_v1_t menu;
@@ -675,9 +856,11 @@ static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wcha
     CHECK(fpv.reg_menu != NULL && fpv.reg_menu(&menu) == FB_OK);
     CHECK(tw.init(&svc) == FB_OK);
     CHECK(tw.reg_menu != NULL && tw.reg_menu(&menu) == FB_OK);
+    CHECK(drone.init(&svc) == FB_OK);
+    CHECK(drone.reg_menu != NULL && drone.reg_menu(&menu) == FB_OK);
 
-    /* Verify ZERO default keyboard or gamepad binding conflicts across all 3 mods */
-    CHECK(g_mact_count == 1 + 2 + 6); /* core(1) + fpv(2) + tw(6); opt-in toggle_window is OFF by default */
+    /* Verify ZERO default keyboard or gamepad binding conflicts across all 4 mods */
+    CHECK(g_mact_count == 2 + 2 + 6 + 5); /* core(2) + fpv(2) + tw(6) + drone(5) */
     CHECK(mmenu_find_action("community.time_weather_control", "toggle_window") == NULL);
     for (int i = 0; i < g_mact_count; ++i) {
         for (int j = i + 1; j < g_mact_count; ++j) {
@@ -795,10 +978,42 @@ static void test_mock_menu_sync_and_conflicts(const wchar_t* fpv_dll, const wcha
     mock_emit_frame(0.06); /* >= 100ms -> blend done */
     CHECK(peek_u32(OFF_WEATHER) == H_W2 && peek_u32(OFF_WEATHER + 4u) == H_W2);
 
+    /* --- FPV Drone Menu Sync, Presets, Views & Status --- */
+    mmenu_fire_action("community.fpv_drone", "toggle_drone", 1);
+    CHECK(mmenu_get_setting("community.fpv_drone", "drone_active", &fv) == FB_OK && fv.v.bool_val == 1);
+    mock_emit_frame(0.02);
+    mock_emit_frame(0.06);
+    CHECK(peek_u32(OFF_DRONE_CAM_OV) == 1u);
+
+    mmenu_fire_action("community.fpv_drone", "cycle_view", 1);
+    CHECK(mmenu_get_setting("community.fpv_drone", "camera_view", &fv) == FB_OK && fv.v.enum_val == 1); /* Chase */
+    mmenu_fire_action("community.fpv_drone", "toggle_pilot_view", 1);
+    CHECK(mmenu_get_setting("community.fpv_drone", "camera_view", &fv) == FB_OK && fv.v.enum_val == 3); /* Pilot */
+    CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
+    mmenu_fire_action("community.fpv_drone", "toggle_overlay", 1);
+    CHECK(mmenu_get_setting("community.fpv_drone", "overlay_open", &fv) == FB_OK && fv.v.bool_val == 1);
+
+    mock_setting_slot_t* d_st = mmenu_find_setting("community.fpv_drone", "drone_status");
+    CHECK(d_st != NULL && d_st->on_status != NULL);
+    if (d_st && d_st->on_status) {
+        char buf[256];
+        d_st->on_status("drone_status", buf, sizeof(buf), d_st->user_ctx);
+        CHECK(strstr(buf, "Pilot") != NULL);
+        CHECK(strstr(buf, "cam_writes=") != NULL);
+    }
+
+    mmenu_user_set_bool("community.fpv_drone", "no_battery_drain", 1);
+    mmenu_user_set_bool("community.fpv_drone", "no_damage", 1);
+    mmenu_user_set_enum("community.fpv_drone", "preset_index", 1);
+    mmenu_fire_action("community.fpv_drone", "toggle_drone", 1);
+    CHECK(mmenu_get_setting("community.fpv_drone", "drone_active", &fv) == FB_OK && fv.v.bool_val == 0);
+
     fpv.shutdown();
     tw.shutdown();
+    drone.shutdown();
     FreeLibrary(fpv.mod);
     FreeLibrary(tw.mod);
+    FreeLibrary(drone.mod);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -897,11 +1112,14 @@ static void test_e2e_fireball_core(
     const wchar_t* core_dll,
     const wchar_t* fpv_dll,
     const wchar_t* tw_dll,
+    const wchar_t* drone_dll,
+    const wchar_t* mock_libfpv_dll,
     const wchar_t* tmp_wdir,
     const char*    tmp_adir)
 {
     printf("[3] Testing end-to-end inside fireball_core.dll (FIREBALL_HEADLESS=1)...\n");
     SetEnvironmentVariableW(L"FIREBALL_HEADLESS", L"1");
+    SetEnvironmentVariableW(L"LIBFPV_DLL", mock_libfpv_dll);
 
     wchar_t mods_dir[MAX_PATH * 2];
     swprintf(mods_dir, sizeof(mods_dir) / sizeof(mods_dir[0]), L"%ls\\e2e_mods", tmp_wdir);
@@ -913,6 +1131,7 @@ static void test_e2e_fireball_core(
 
     CHECK(copy_into_dir(fpv_dll, mods_dir, L"fpv_toggle.fbplugin.dll"));
     CHECK(copy_into_dir(tw_dll, mods_dir, L"time_weather.fbplugin.dll"));
+    CHECK(copy_into_dir(drone_dll, mods_dir, L"fpv_drone.fbplugin.dll"));
 
     /* Write weather list + minimal fireball_bundle.fbin supplying time_weather config */
     char list_path[300], jlist[600], tw_cfg_json[1024];
@@ -1071,42 +1290,69 @@ static void test_e2e_fireball_core(
     cb.on_frame_begin(10u, 1.0 / 30.0);
     CHECK(peek_u32(OFF_WEATHER + 4u) == H_W1); /* locked back to H_W1! */
 
+    /* 3e2. fpv_drone gamepad chords inside fireball_core.dll: LB + X launches, LB + B cycles to Chase, RB + View -> Pilot */
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_LEFT_SHOULDER, FB_INPUT_PRESS, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_X, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_X, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_LEFT_SHOULDER, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    cb.on_frame_begin(11u, 0.02);
+    cb.on_frame_begin(12u, 0.06);
+    CHECK(peek_u32(OFF_DRONE_CAM_OV) == 1u);
+    CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x30u) - 105.0f) < 1e-2f);
+
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_LEFT_SHOULDER, FB_INPUT_PRESS, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_B, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_B, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_LEFT_SHOULDER, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    cb.on_frame_begin(13u, 0.02);
+    CHECK(fabsf(peek_f32(OFF_DRONE_CAM + 0x30u) - 75.0f) < 1e-2f);
+
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_PRESS, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_BACK, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_BACK, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
+
     /* 3f. Headless Mod Menu navigation:
-     * Open menu (F1), RB -> Tab 1 (FPV Unlocker):
-     *   Selectable rows on Tab 1:
-     *     0: hold_guard_enabled
-     *     1: start_in_fpv  -> press A to enable & persist!
-     *     2: restore_on_shutdown
-     * RB -> Tab 2 (Time & Weather):
-     *   Selectable rows on Tab 2:
-     *     0: clock_paused
-     *     1: time_scale
-     *     2: clock_hour (persisted as 3)
-     *     3: clock_minute (persisted as 45)
-     *     4: apply_time_btn -> press A -> sets clock to 03:45:00!
-     *     5: preset_dawn_btn -> press A -> sets clock to 06:00:00!
+     * Plugins load alphabetically on NTFS:
+     *   Tab 1: FPV Drone (libfpv)
+     *   Tab 2: FPV Unlocker
+     *   Tab 3: Time & Weather
      */
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts);
-    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 1: FPV Unlocker */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 1: FPV Drone */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 2: FPV Unlocker */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);      /* row 1: start_in_fpv */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_A, 0, &ts);              /* toggle start_in_fpv -> true (saved!) */
 
-    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 2: Time & Weather */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 3: Time & Weather */
     for (int i = 0; i < 4; ++i) {
         press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);
     }
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_A, 0, &ts);              /* click apply_time_btn (03:45) */
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts); /* close menu */
-    cb.on_frame_begin(11u, 1.0 / 30.0);
+    cb.on_frame_begin(14u, 1.0 / 30.0);
     CHECK(peek_u32(OFF_CLOCK) == 3u && peek_u32(OFF_CLOCK + 4u) == 45u);
 
     /* Quick preset Dawn (06:00) via headless menu */
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts);
-    /* Menu remembers Tab 2 and row 4; DPad Down -> row 5 (preset_dawn_btn) */
+    /* Menu remembers Tab 3 and row 4; DPad Down -> row 5 (preset_dawn_btn) */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_A, 0, &ts);
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts);
-    cb.on_frame_begin(12u, 1.0 / 30.0);
+    cb.on_frame_begin(15u, 1.0 / 30.0);
     CHECK(peek_u32(OFF_CLOCK) == 6u && peek_u32(OFF_CLOCK + 4u) == 0u);
 
     /* 3g. Shutdown & Re-attach: verify start_in_fpv persisted across re-attach & restore_on_shutdown works! */
@@ -1127,7 +1373,8 @@ static void test_e2e_fireball_core(
     cb.on_frame_begin(1u, 1.0 / 60.0);
     CHECK(peek_u32(OFF_CAM) == 2u);
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts);
-    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 1: FPV Unlocker */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 1: FPV Drone */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 2: FPV Unlocker */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);      /* row 1: start_in_fpv */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);      /* row 2: restore_on_shutdown */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_A, 0, &ts);              /* toggle restore_on_shutdown -> false */
@@ -1135,6 +1382,7 @@ static void test_e2e_fireball_core(
     cb.on_shutdown();
     CHECK(peek_u32(OFF_CAM) == 2u); /* restore_on_shutdown=false preserved FirstPerson! */
 
+    SetEnvironmentVariableW(L"LIBFPV_DLL", NULL);
     FreeLibrary(core);
 }
 
@@ -1142,6 +1390,8 @@ int wmain(int argc, wchar_t** argv) {
     const wchar_t* core_dll = NULL;
     const wchar_t* fpv_dll = NULL;
     const wchar_t* tw_dll = NULL;
+    const wchar_t* drone_dll = NULL;
+    const wchar_t* mock_libfpv_dll = NULL;
 
     for (int i = 1; i + 1 < argc; ++i) {
         if (wcscmp(argv[i], L"--core") == 0) {
@@ -1150,11 +1400,15 @@ int wmain(int argc, wchar_t** argv) {
             fpv_dll = argv[++i];
         } else if (wcscmp(argv[i], L"--time-weather") == 0) {
             tw_dll = argv[++i];
+        } else if (wcscmp(argv[i], L"--fpv-drone") == 0) {
+            drone_dll = argv[++i];
+        } else if (wcscmp(argv[i], L"--mock-libfpv") == 0) {
+            mock_libfpv_dll = argv[++i];
         }
     }
 
-    if (!fpv_dll || !tw_dll) {
-        fprintf(stderr, "Usage: fireball_mods_integration_test --fpv <dll> --time-weather <dll> [--core <dll>]\n");
+    if (!fpv_dll || !tw_dll || !drone_dll || !mock_libfpv_dll) {
+        fprintf(stderr, "Usage: fireball_mods_integration_test --fpv <dll> --time-weather <dll> --fpv-drone <dll> --mock-libfpv <dll> [--core <dll>]\n");
         return 2;
     }
 
@@ -1172,10 +1426,10 @@ int wmain(int argc, wchar_t** argv) {
     snprintf(work_a, sizeof(work_a), "%sfireball_mods_itest", tmp_a);
     CreateDirectoryW(work_w, NULL);
 
-    test_standalone_v1(fpv_dll, tw_dll, work_a);
-    test_mock_menu_sync_and_conflicts(fpv_dll, tw_dll, work_a);
+    test_standalone_v1(fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_a);
+    test_mock_menu_sync_and_conflicts(fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_a);
     if (core_dll) {
-        test_e2e_fireball_core(core_dll, fpv_dll, tw_dll, work_w, work_a);
+        test_e2e_fireball_core(core_dll, fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_w, work_a);
     } else {
         printf("[3] Skipped fireball_core.dll E2E (--core not provided)\n");
     }

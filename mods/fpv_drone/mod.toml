@@ -1,0 +1,98 @@
+# Fireball-Mods Manifest — FPV Quadcopter Drone (libfpv / Betaflight-in-the-loop)
+# Strictly offline / single-player mod for GTA VI (Project Americas / RAGE 9).
+#
+# Runtime physics, Betaflight 2025.12 SimITL firmware, radio/gamepad input, Betaflight
+# Configurator WebSocket (ws://localhost:5761), MAX7456 OSD, and motor/beeper audio are
+# provided by dynamically loading `libfpv.dll` (https://github.com/hammerill/libfpv,
+# monolithic or split-process `libfpv.dll` + `libfpv-server.exe`) at runtime.
+#
+# STATUS: The title camera/pilot/focus/wind symbols below are PLACEHOLDERS until live
+# host memory scans in `gta6-modding` confirm their RVAs. Configure them in VIctory's
+# `victory.toml` under `[fireball.symbols]`:
+#   [fireball.symbols]
+#   "fb.drone_camera"          = 0x...
+#   "fb.drone_camera_override" = 0x...
+#   "fb.pilot_pos"             = 0x...
+#   "fb.streaming_focus"       = 0x...
+#   "fb.drone_pose"            = 0x...
+#   "fb.wind"                  = 0x...
+
+[mod]
+id = "community.fpv_drone"
+name = "FPV Quadcopter Drone (libfpv)"
+version = "0.1.0"
+authors = ["Fireball-Mods Contributors"]
+license = "MIT OR Apache-2.0"
+target_game_version = "1.0.2.1"
+min_fireball_abi = 1
+required_tiers = [0, 2]
+description = "Real Betaflight-in-the-loop FPV quadcopter drone powered by hammerill/libfpv (loaded dynamically at runtime via libfpv.dll), with RAGE 9 Z-up coordinates, multi-view camera sync, stereo waveOut motor audio, opt-in live Betaflight OSD window, and full Fireball Mod Menu integration."
+
+[dependencies]
+requires = []
+load_after = []
+conflicts = []
+
+[[plugins]]
+id = "fpv_drone"
+version = "0.1.0"
+entry = "plugins/fpv_drone.py"
+native_path = "bin/fpv_drone.fbplugin.dll"
+required_caps = [
+    "FB_CAP_FRAME_LIFECYCLE",
+    "FB_CAP_INPUT_EVENTS",
+]
+
+[plugins.config]
+# Path to x64 libfpv.dll (empty = auto-search next to fpv_drone.fbplugin.dll, ./libfpv/, then PATH)
+libfpv_dll_path = ""
+# Writable data directory for Betaflight EEPROM, presets, and radio mappings (empty = libfpv shared %APPDATA%\libfpv)
+data_dir = ""
+# Preset name (empty = player's last choice or libfpv built-in default, e.g. "Freestyler 5")
+preset = ""
+# Betaflight Configurator WebSocket server (ws://localhost:5761)
+enable_configurator = true
+configurator_port = 5761
+# Embedded SDL3 radio/gamepad reader inside libfpv
+enable_device_input = true
+# Enable lens distortion / goggle video feed flags only when a D3D12 post-process renderer draws them
+enable_lens_distortion = false
+enable_video_feed = false
+sim_rate_hz = 1000.0
+auto_pause_seconds = 0.5
+# Simulation options
+no_battery_drain = false
+no_damage = false
+# Stereo Win32 waveOut motor & beeper audio pulling fpv_audio_read()
+audio_enabled = true
+audio_volume = 1.0
+audio_beep_volume = 1.0
+# Opt-in lightweight Win32 GDI live Betaflight MAX7456 OSD preview window (off by default)
+osd_window_enabled = false
+osd_style = "analog"                # "analog" or "hd"
+# Spawn & raycast ground fallback (used until a RAGE 9 physics line-probe hook is wired)
+spawn_forward_m = 2.0
+spawn_height_m = 0.25
+use_ground_fallback = true
+ground_fallback_z = 0.0
+# Ambient wind fallback (m/s, host Z-up coords) when wind_symbol is unavailable
+ambient_wind_x = 0.0
+ambient_wind_y = 0.0
+ambient_wind_z = 0.0
+ambient_wind_turbulence = -1.0      # < 0 = automatic from height above ground
+# Title memory symbols (PLACEHOLDERS until confirmed by live VIctory scan)
+camera_symbol = "fb.drone_camera"
+camera_layout = "mat34_fov"         # "mat34_fov" | "pos_quat_fov" | "pos_euler_fov"
+camera_override_symbol = "fb.drone_camera_override"
+pilot_pos_symbol = "fb.pilot_pos"
+focus_pos_symbol = "fb.streaming_focus"
+drone_pose_symbol = "fb.drone_pose"
+wind_symbol = "fb.wind"
+# Optional combined mod + libfpv log file path
+log_path = ""
+# Conflict-free default hotkeys (Win32 VK_*; also remappable in Fireball Mod Menu)
+key_toggle_drone = 0x76             # F7 (libfpv standard launch/recall key)
+key_cycle_view = 0x56               # Shift + V (FPV / Chase / LOS / Pilot)
+key_respawn = 0x52                  # Ctrl + R (repair & respawn)
+key_pilot_view = 0x46               # Ctrl + F (toggle pilot view with drone left flying)
+key_overlay = 0x78                  # F9 (libfpv ImGui settings overlay; avoids F8 legacy TW window)
