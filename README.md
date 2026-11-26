@@ -14,6 +14,7 @@ Standalone, strictly offline / single-player mods for *Grand Theft Auto VI* (Pro
 - `mods/fpv_unlocker/` — **On-Foot First-Person View (FPV) Toggle & Unlocker** (`fpv_toggle.fbplugin.dll`, XML/KV/PSO patches, reference Python state machine). See [mods/fpv_unlocker/README.md](mods/fpv_unlocker/README.md).
 - `mods/time_weather_control/` — **Time & Weather Control** (`time_weather.fbplugin.dll`, controller-friendly Mod Menu clock/weather controls, opt-in legacy F8 window, reference Python state machine). See [mods/time_weather_control/README.md](mods/time_weather_control/README.md).
 - `mods/fpv_drone/` — **FPV Quadcopter Drone (`libfpv` / Betaflight-in-the-loop)** (`fpv_drone.fbplugin.dll`, pure C11 dynamic runtime loader for [hammerill/libfpv](https://github.com/hammerill/libfpv) ABI v1, RAGE 9 Z-up coordinates, multi-view camera sync, stereo `waveOut` motor audio, opt-in live MAX7456 OSD preview window, reference Python state machine). See [mods/fpv_drone/README.md](mods/fpv_drone/README.md).
+- `mods/quake_movement/` — **Quake Movement (VQ3 / CPMA / Half-Life / Apex Legends / Deadlock / Custom)** (`quake_movement.fbplugin.dll`, decoupled pure-C11 Z-up movement physics engine, live-switchable presets, Mod Menu sliders & speed readout, console commands `qm`, guarded Tier 2 `CPed` memory I/O, reference Python state machine). See [mods/quake_movement/README.md](mods/quake_movement/README.md).
 - `scripts/stage_mods.py` — Stdlib-only Python helper to validate manifests, stage built `*.fbplugin.dll` + mod manifests into `--out` (default `D:\GTA6-work\fireball-mods-stage`), and optionally invoke `fireball_cli.py` to pack `.gta6mod` archives or compile `fireball_bundle.fbin`.
 - `tests/mods_integration_test.c` — Native C11 CTest harness testing both plugins standalone (v1 fallback), mock Menu API sync & zero binding conflicts, and end-to-end inside `fireball_core.dll` (`FIREBALL_HEADLESS=1`).
 - `tests/test_mods.py` — Offline Python `unittest` suite validating manifests, `scripts/stage_mods.py`, and reference Python plugin state machines.
@@ -39,7 +40,7 @@ python -B scripts/stage_mods.py
 
 ## Default Controls & Chords
 
-All default keyboard and XInput gamepad chord bindings are conflict-free across `fireball.core`, `community.fpv_unlocker`, `community.time_weather_control`, and `community.fpv_drone`, and can be remapped live in the in-game Mod Menu (`fireball_user_config.json`):
+All default keyboard and XInput gamepad chord bindings are conflict-free across `fireball.core`, `community.fpv_unlocker`, `community.time_weather_control`, `community.fpv_drone`, and `community.quake_movement`, and can be remapped live in the in-game Mod Menu (`fireball_user_config.json`):
 
 | Mod | Action | Trigger | Default Keyboard | Default Gamepad |
 | :--- | :--- | :--- | :--- | :--- |
@@ -59,6 +60,9 @@ All default keyboard and XInput gamepad chord bindings are conflict-free across 
 | `community.fpv_drone` | Repair & Respawn Drone (`respawn_drone`) | Press | `Ctrl + R` | `LB + A` |
 | `community.fpv_drone` | Toggle Pilot View (`toggle_pilot_view`) | Press | `Ctrl + F` | `RB + View` |
 | `community.fpv_drone` | Toggle `libfpv` Overlay (`toggle_overlay`) | Press | `F9` | `RB + Start` |
+| `community.quake_movement` | Toggle Quake Movement (`toggle_movement`) | Press | `F6` | `RB + A` |
+| `community.quake_movement` | Cycle Movement Preset (`cycle_preset`) | Press | `Ctrl + P` | `RB + Y` |
+| `community.quake_movement` | Directional Dash (`dash`) | Press | `Shift + Q` | `RB + B` |
 
 ## Adding a New Mod
 

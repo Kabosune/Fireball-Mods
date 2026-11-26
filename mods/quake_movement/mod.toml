@@ -1,0 +1,77 @@
+# Fireball-Mods Manifest — Quake Movement (VQ3 / CPMA / Half-Life / Apex Legends / Deadlock / Custom)
+# Strictly offline / single-player mod for GTA VI (Project Americas / RAGE 9).
+#
+# Tier 2 runtime plugin (`FB_EVENT_FRAME_BEGIN` + `FB_EVENT_INPUT_EVENT` + guarded title memory I/O)
+# implementing arena-shooter & movement-shooter on-foot locomotion in RAGE 9 Z-up meters.
+#
+# STATUS: Live `CPed` RVAs await a VIctory `state_scan` + `state_scan_diff.py ped-move` session
+# (see `C:\dev\gta6-modding\docs\ped_runtime_movement.md`). Until symbols are populated in
+# `victory.toml` under `[fireball.symbols]`, the plugin loads cleanly and degrades to safe no-op:
+#   [fireball.symbols]
+#   "fb.player_pos"    = 0x...
+#   "fb.player_vel"    = 0x...
+#   "fb.player_flags"  = 0x...
+#   "fb.camera_basis"  = 0x...
+
+[mod]
+id = "community.quake_movement"
+name = "Quake Movement (VQ3 / CPMA / HL / Apex / Deadlock)"
+version = "0.1.0"
+authors = ["Fireball-Mods Contributors"]
+license = "MIT OR Apache-2.0"
+target_game_version = "1.0.2.1"
+min_fireball_abi = 1
+required_tiers = [0, 2]
+description = "Toggleable Quake-style on-foot movement with live-switchable presets for Quake VQ3, Quake CPMA, Half-Life, Apex Legends, Deadlock, and Custom, with Fireball Mod Menu sliders and console commands."
+
+[dependencies]
+requires = []
+load_after = []
+conflicts = []
+
+[[plugins]]
+id = "quake_movement"
+version = "0.1.0"
+entry = "plugins/quake_movement.py"
+native_path = "bin/quake_movement.fbplugin.dll"
+required_caps = [
+    "FB_CAP_FRAME_LIFECYCLE",
+    "FB_CAP_INPUT_EVENTS",
+]
+
+[plugins.config]
+# Start disabled so standard GTA VI locomotion stays untouched until toggled ON (F6 / RB + A)
+start_enabled = false
+# Default preset: "quake_vq3" | "quake_cpma" | "half_life" | "apex_legends" | "deadlock" | "custom"
+default_preset = "quake_vq3"
+auto_bhop = true
+
+# Custom preset initial tuning (meters / seconds, Z-up)
+custom_max_speed = 9.0
+custom_ground_accel = 12.0
+custom_air_accel = 20.0
+custom_air_wish_cap = 2.0
+custom_friction = 6.0
+custom_gravity = 19.6
+custom_jump_speed = 7.0
+custom_slide_boost = 3.0
+custom_dash_impulse = 13.0
+
+# Engine symbol bindings (PLACEHOLDERS until confirmed by live VIctory state_scan)
+player_pos_symbol = "fb.player_pos"
+player_vel_symbol = "fb.player_vel"
+player_flags_symbol = "fb.player_flags"
+camera_basis_symbol = "fb.camera_basis"
+camera_layout = "mat34"                 # "mat34" | "yaw_f32" | "forward_vec3"
+
+# Player state flag masks (overridable once state_scan_diff.py ped-move confirms bit offsets)
+flag_on_ground_mask = 0x00000001
+flag_crouched_mask = 0x00000002
+flag_in_vehicle_mask = 0x00000004
+flag_ragdoll_mask = 0x00000008
+flag_dead_mask = 0x00000010
+
+# Conflict-free default hotkeys (Win32 VK_*; also remappable in Fireball Mod Menu)
+key_toggle_movement = 0x75              # F6        (Gamepad: RB + A)
+key_cycle_preset = 0x50                 # Ctrl + P  (Gamepad: RB + Y)
+key_dash = 0x51                         # Shift + Q (Gamepad: RB + B)

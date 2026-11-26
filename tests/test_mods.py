@@ -89,6 +89,7 @@ class TestFireballModsOffline(unittest.TestCase):
                 "community.fpv_unlocker",
                 "community.time_weather_control",
                 "community.fpv_drone",
+                "community.quake_movement",
             },
         )
 
@@ -114,6 +115,16 @@ class TestFireballModsOffline(unittest.TestCase):
         self.assertFalse(drone_cfg["enable_lens_distortion"])
         self.assertEqual(drone_cfg["configurator_port"], 5761)
 
+        with open(os.path.join(MODS_DIR, "quake_movement", "mod.toml"), "rb") as f:
+            qm_toml = tomllib.load(f)
+        qm_cfg = qm_toml["plugins"][0]["config"]
+        self.assertFalse(qm_cfg["start_enabled"])
+        self.assertEqual(qm_cfg["default_preset"], "quake_vq3")
+        self.assertEqual(qm_cfg["player_vel_symbol"], "fb.player_vel")
+        self.assertEqual(qm_cfg["player_flags_symbol"], "fb.player_flags")
+        self.assertEqual(qm_cfg["camera_basis_symbol"], "fb.camera_basis")
+        self.assertEqual(qm_cfg["key_toggle_movement"], 0x75)
+
     def test_stage_mods_cli_help_and_staging(self) -> None:
         proc = subprocess.run(
             [sys.executable, "-B", os.path.join(SCRIPTS_DIR, "stage_mods.py"), "--help"],
@@ -137,12 +148,13 @@ class TestFireballModsOffline(unittest.TestCase):
                 "fpv_toggle.fbplugin.dll",
                 "time_weather.fbplugin.dll",
                 "fpv_drone.fbplugin.dll",
+                "quake_movement.fbplugin.dll",
             ):
                 with open(os.path.join(build_dir, name), "wb") as wf:
                     wf.write(b"MZ_TEST")
 
             rep = stage_mods.stage_mods(MODS_DIR, build_dir, out_dir, game_dir=game_dir)
-            self.assertEqual(len(rep["mods"]), 3)
+            self.assertEqual(len(rep["mods"]), 4)
             for m in rep["mods"]:
                 self.assertEqual(len(m["staged_dlls"]), 1)
                 self.assertTrue(os.path.isfile(m["staged_dlls"][0]))
@@ -328,6 +340,73 @@ class TestFireballModsOffline(unittest.TestCase):
         # F7 recalls drone
         self.assertEqual(core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x76, FB_INPUT_PRESS, 0)), 1)
         self.assertFalse(plugin.drone_active)
+        plugin.fb_plugin_shutdown()
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(CORE_DIR, "fireball")), "FIREBALL_CORE_DIR/fireball not available")
+    def test_reference_quake_movement_plugin_state_machine(self) -> None:
+        import struct
+        from fireball.abi import (
+            FB_DEV_KEYBOARD,
+            FB_EVENT_FRAME_BEGIN,
+            FB_EVENT_INPUT_EVENT,
+            FB_INPUT_PRESS,
+            FB_OK,
+            FrameEvent,
+            InputEvent,
+        )
+
+        qm_mod = _load_module_from_path(
+            "fb_mods_quake_movement",
+            os.path.join(MODS_DIR, "quake_movement", "plugins", "quake_movement.py"),
+        )
+        plugin = qm_mod.create_plugin()
+        core = _MiniCore(
+            {
+                "fb.player_pos": 0x5000,
+                "fb.player_vel": 0x5100,
+                "fb.player_flags": 0x5200,
+                "fb.camera_basis": 0x5300,
+            },
+            {"community.quake_movement": {"default_preset": "quake_vq3", "camera_layout": "yaw_f32"}},
+        )
+        for off in (0x5000, 0x5004, 0x5008, 0x5100, 0x5104, 0x5108, 0x5300):
+            core.mem[off] = 0
+        core.mem[0x5200] = qm_mod.FLAG_ON_GROUND
+
+        self.assertEqual(plugin.fb_plugin_init(core), FB_OK)
+        # F6 enables movement
+        self.assertEqual(core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x75, FB_INPUT_PRESS, 0)), 1)
+        self.assertTrue(plugin.enabled)
+        # Hold W -> accelerates along +Y
+        core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x57, FB_INPUT_PRESS, 0))
+        core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=1, dt_sec=1 / 60))
+        vy = struct.unpack("<f", struct.pack("<I", core.mem[0x5104]))[0]
+        self.assertGreater(vy, 1.0)
+        self.assertEqual(plugin.vel_writes, 1)
+
+        # Ctrl + P cycles presets VQ3 -> CPMA -> Half-Life -> Apex -> Deadlock
+        for expected in ("quake_cpma", "half_life", "apex_legends", "deadlock"):
+            self.assertEqual(
+                core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x50, FB_INPUT_PRESS, qm_mod.FB_MOD_CTRL)),
+                1,
+            )
+            self.assertEqual(plugin.preset, expected)
+
+        # Shift + Q triggers directional dash in Deadlock
+        self.assertEqual(
+            core.emit(FB_EVENT_INPUT_EVENT, InputEvent(FB_DEV_KEYBOARD, 0x51, FB_INPUT_PRESS, qm_mod.FB_MOD_SHIFT)),
+            1,
+        )
+        core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=2, dt_sec=1 / 60))
+        vy_dash = struct.unpack("<f", struct.pack("<I", core.mem[0x5104]))[0]
+        self.assertGreater(vy_dash, 12.0)
+
+        # Dead/in-vehicle guard blocks writes
+        prev_writes = plugin.vel_writes
+        core.mem[0x5200] = qm_mod.FLAG_ON_GROUND | qm_mod.FLAG_IN_VEHICLE
+        core.emit(FB_EVENT_FRAME_BEGIN, FrameEvent(frame_index=3, dt_sec=1 / 60))
+        self.assertEqual(plugin.vel_writes, prev_writes)
+        self.assertEqual(plugin.guard_skips, 1)
         plugin.fb_plugin_shutdown()
 
 

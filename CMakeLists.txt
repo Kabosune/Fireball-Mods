@@ -114,8 +114,35 @@ set_target_properties(fpv_drone_plugin PROPERTIES
 fb_apply_strict_c11(fpv_drone_plugin)
 
 # ---------------------------------------------------------------------------
-# 4. Native Integration Test Harness (strictly against public SDK headers)
+# 4. mods/quake_movement -> quake_movement.fbplugin.dll (pure C11 movement)
 # ---------------------------------------------------------------------------
+add_library(quake_movement_plugin SHARED
+    mods/quake_movement/native/qm_physics.c
+    mods/quake_movement/native/quake_movement.c
+)
+target_compile_definitions(quake_movement_plugin PRIVATE FB_BUILD_DLL)
+target_include_directories(quake_movement_plugin PRIVATE
+    "${FIREBALL_SDK_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/quake_movement/native"
+)
+set_target_properties(quake_movement_plugin PROPERTIES
+    OUTPUT_NAME "quake_movement.fbplugin"
+    PREFIX ""
+)
+fb_apply_strict_c11(quake_movement_plugin)
+
+# ---------------------------------------------------------------------------
+# 5. Native Unit & Integration Test Harnesses (strictly against public SDK)
+# ---------------------------------------------------------------------------
+add_executable(qm_physics_test
+    tests/qm_physics_test.c
+    mods/quake_movement/native/qm_physics.c
+)
+target_include_directories(qm_physics_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/quake_movement/native"
+)
+fb_apply_strict_c11(qm_physics_test)
+
 add_library(mock_libfpv SHARED
     tests/mock_libfpv.c
 )
@@ -136,19 +163,25 @@ add_dependencies(fireball_mods_integration_test
     fpv_toggle_plugin
     time_weather_plugin
     fpv_drone_plugin
+    quake_movement_plugin
     mock_libfpv
 )
 fb_apply_strict_c11(fireball_mods_integration_test)
 
 # ---------------------------------------------------------------------------
-# 5. CTest Integration
+# 6. CTest Integration
 # ---------------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
+    add_test(
+        NAME qm_physics_unit
+        COMMAND $<TARGET_FILE:qm_physics_test>
+    )
     set(_itest_args
         --fpv $<TARGET_FILE:fpv_toggle_plugin>
         --time-weather $<TARGET_FILE:time_weather_plugin>
         --fpv-drone $<TARGET_FILE:fpv_drone_plugin>
+        --quake-movement $<TARGET_FILE:quake_movement_plugin>
         --mock-libfpv $<TARGET_FILE:mock_libfpv>
     )
     if(FIREBALL_CORE_DLL)

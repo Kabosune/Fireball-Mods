@@ -35,6 +35,7 @@
 #include "fireball_host.h"
 #include "fireball_plugin.h"
 #include "fireball_menu.h"
+#include "fireball_console.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -55,14 +56,16 @@ typedef int (*fb_plugin_query_fn)(fb_plugin_info_v1_t*);
 typedef int (*fb_plugin_init_fn)(const fb_core_services_v1_t*);
 typedef void (*fb_plugin_shutdown_fn)(void);
 typedef int (*fb_plugin_register_menu_fn)(const fb_menu_api_v1_t*);
+typedef int (*fb_plugin_register_console_fn)(const fb_console_api_v1_t*);
 typedef int (*fb_attach_host_fn)(const fb_host_api_v1_t*, fb_modcore_callbacks_v1_t*);
 
 typedef struct loaded_plugin {
-    HMODULE                    mod;
-    fb_plugin_query_fn         query;
-    fb_plugin_init_fn          init;
-    fb_plugin_shutdown_fn      shutdown;
-    fb_plugin_register_menu_fn reg_menu;
+    HMODULE                       mod;
+    fb_plugin_query_fn            query;
+    fb_plugin_init_fn             init;
+    fb_plugin_shutdown_fn         shutdown;
+    fb_plugin_register_menu_fn    reg_menu;
+    fb_plugin_register_console_fn reg_console;
 } loaded_plugin_t;
 
 static int load_plugin_dll(const wchar_t* path, loaded_plugin_t* out) {
@@ -76,6 +79,7 @@ static int load_plugin_dll(const wchar_t* path, loaded_plugin_t* out) {
     out->init = (fb_plugin_init_fn)(void*)GetProcAddress(out->mod, "fb_plugin_init");
     out->shutdown = (fb_plugin_shutdown_fn)(void*)GetProcAddress(out->mod, "fb_plugin_shutdown");
     out->reg_menu = (fb_plugin_register_menu_fn)(void*)GetProcAddress(out->mod, "fb_plugin_register_menu");
+    out->reg_console = (fb_plugin_register_console_fn)(void*)GetProcAddress(out->mod, "fb_plugin_register_console");
     return out->query && out->init && out->shutdown;
 }
 
@@ -93,6 +97,10 @@ static int load_plugin_dll(const wchar_t* path, loaded_plugin_t* out) {
 #define OFF_DRONE_FOCUS     0x3C0u
 #define OFF_DRONE_POSE      0x400u
 #define OFF_DRONE_WIND      0x440u
+#define OFF_QM_POS          0x500u
+#define OFF_QM_VEL          0x520u
+#define OFF_QM_FLAGS        0x540u
+#define OFF_QM_CAM          0x560u
 
 #define H_W0 0xF5A87B65u
 #define H_W1 0x614A1F91u
@@ -102,6 +110,8 @@ static uint8_t       g_mem[MOCK_MEM_SIZE];
 static char          g_cfg_fpv[4096];
 static char          g_cfg_tw[4096];
 static char          g_cfg_drone[4096];
+static char          g_cfg_qm[4096];
+static int           g_suppress_qm_syms = 0;
 static fb_event_fn_t g_listeners[8][8];
 static void*         g_listener_ctx[8][8];
 static int           g_listener_count[8];
@@ -159,6 +169,8 @@ static int mock_config_get_json(const char* mod_id, char* buf, size_t cap) {
         src = g_cfg_tw;
     } else if (mod_id && strcmp(mod_id, "community.fpv_drone") == 0 && g_cfg_drone[0]) {
         src = g_cfg_drone;
+    } else if (mod_id && strcmp(mod_id, "community.quake_movement") == 0 && g_cfg_qm[0]) {
+        src = g_cfg_qm;
     }
     if (!src) {
         return FB_ERR_NOT_FOUND;
@@ -239,6 +251,20 @@ static void* mock_resolve_symbol(const char* sym) {
     if (strcmp(sym, "fb.wind") == 0) {
         return g_mem + OFF_DRONE_WIND;
     }
+    if (!g_suppress_qm_syms) {
+        if (strcmp(sym, "fb.player_pos") == 0) {
+            return g_mem + OFF_QM_POS;
+        }
+        if (strcmp(sym, "fb.player_vel") == 0) {
+            return g_mem + OFF_QM_VEL;
+        }
+        if (strcmp(sym, "fb.player_flags") == 0) {
+            return g_mem + OFF_QM_FLAGS;
+        }
+        if (strcmp(sym, "fb.camera_basis") == 0) {
+            return g_mem + OFF_QM_CAM;
+        }
+    }
     return NULL;
 }
 
@@ -313,6 +339,7 @@ static void test_standalone_v1(
     const wchar_t* fpv_dll,
     const wchar_t* tw_dll,
     const wchar_t* drone_dll,
+    const wchar_t* qm_dll,
     const wchar_t* mock_libfpv_dll,
     const char*    tmp_dir)
 {
@@ -582,6 +609,80 @@ static void test_standalone_v1(
 
         FreeLibrary(drone.mod);
     }
+
+    /* --- 1d. quake_movement v1 (unresolved standby + resolved movement + safety guard) --- */
+    loaded_plugin_t qm;
+    CHECK(load_plugin_dll(qm_dll, &qm));
+    if (qm.mod) {
+        fb_plugin_info_v1_t info;
+        memset(&info, 0, sizeof(info));
+        CHECK(qm.query(&info) == FB_OK);
+        CHECK(info.abi_version == FB_PLUGIN_ABI_VERSION);
+        CHECK(strcmp(info.mod_id, "community.quake_movement") == 0);
+        CHECK(strcmp(info.plugin_id, "quake_movement") == 0);
+
+        /* Safe no-op when symbols are unresolved */
+        memset(g_mem, 0, sizeof(g_mem));
+        mock_reset_bus();
+        g_cfg_qm[0] = '\0';
+        g_suppress_qm_syms = 1;
+        fb_core_services_v1_t svc = make_mock_services();
+        CHECK(qm.init(&svc) == FB_OK);
+        fb_input_event_v1_t ev = make_ev(FB_DEV_KEYBOARD, 0x75u /* F6 */, FB_INPUT_PRESS, FB_MOD_NONE, 1);
+        CHECK(mock_emit_input(&ev) == 1);
+        ev = make_ev(FB_DEV_KEYBOARD, 'W', FB_INPUT_PRESS, FB_MOD_NONE, 2);
+        (void)mock_emit_input(&ev);
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(fabsf(peek_f32(OFF_QM_VEL + 4u)) < 1e-6f);
+        qm.shutdown();
+
+        /* Active Tier 2 movement with resolved symbols */
+        g_suppress_qm_syms = 0;
+        memset(g_mem, 0, sizeof(g_mem));
+        mock_reset_bus();
+        poke_u32(OFF_QM_FLAGS, 0x01u); /* on_ground */
+        /* Identity MAT34 camera basis: row 1 (+0x10..+0x18) = (0, 1, 0) North */
+        poke_f32(OFF_QM_CAM + 0x00u, 1.0f);
+        poke_f32(OFF_QM_CAM + 0x14u, 1.0f);
+        poke_f32(OFF_QM_CAM + 0x28u, 1.0f);
+        CHECK(qm.init(&svc) == FB_OK);
+
+        /* F6 toggles ON, W accelerates +Y */
+        ev = make_ev(FB_DEV_KEYBOARD, 0x75u /* F6 */, FB_INPUT_PRESS, FB_MOD_NONE, 10);
+        CHECK(mock_emit_input(&ev) == 1);
+        ev = make_ev(FB_DEV_KEYBOARD, 'W', FB_INPUT_PRESS, FB_MOD_NONE, 11);
+        CHECK(mock_emit_input(&ev) == 0); /* WASD never consumed */
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(peek_f32(OFF_QM_VEL + 4u) > 1.0f);
+
+        /* Ctrl+P cycles 4 times: VQ3 -> CPMA -> Half-Life -> Apex -> Deadlock */
+        ev = make_ev(FB_DEV_KEYBOARD, 'P', FB_INPUT_PRESS, FB_MOD_CTRL, 20);
+        for (int i = 0; i < 4; ++i) {
+            CHECK(mock_emit_input(&ev) == 1);
+        }
+        /* Shift+Q triggers Deadlock directional dash along +Y */
+        ev = make_ev(FB_DEV_KEYBOARD, 'Q', FB_INPUT_PRESS, FB_MOD_SHIFT, 25);
+        CHECK(mock_emit_input(&ev) == 1);
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(peek_f32(OFF_QM_VEL + 4u) > 12.5f);
+
+        /* Safety guard: dead / ragdoll / in-vehicle blocks all velocity writes */
+        poke_f32(OFF_QM_VEL + 4u, 0.25f);
+        poke_u32(OFF_QM_FLAGS, 0x01u | 0x04u); /* in_vehicle */
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(fabsf(peek_f32(OFF_QM_VEL + 4u) - 0.25f) < 1e-4f);
+
+        poke_u32(OFF_QM_FLAGS, 0x01u | 0x08u); /* ragdoll */
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(fabsf(peek_f32(OFF_QM_VEL + 4u) - 0.25f) < 1e-4f);
+
+        poke_u32(OFF_QM_FLAGS, 0x01u | 0x10u); /* dead */
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(fabsf(peek_f32(OFF_QM_VEL + 4u) - 0.25f) < 1e-4f);
+
+        qm.shutdown();
+        FreeLibrary(qm.mod);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -764,17 +865,74 @@ static void mmenu_fire_action(const char* mod_id, const char* aid, int active) {
     }
 }
 
+/* Mock Console API for testing fb_plugin_register_console */
+typedef struct mock_cmd_slot {
+    char            mod_id[64];
+    char            name[64];
+    fb_command_fn_t callback;
+    void*           user_ctx;
+} mock_cmd_slot_t;
+
+static mock_cmd_slot_t g_mcmd[16];
+static int             g_mcmd_count = 0;
+static char            g_mcon_out[1024];
+
+static int mcon_register_command(const fb_command_desc_v1_t* desc) {
+    if (!desc || !desc->name || !desc->callback || g_mcmd_count >= 16) {
+        return FB_ERR_INVALID_ARG;
+    }
+    mock_cmd_slot_t* s = &g_mcmd[g_mcmd_count++];
+    memset(s, 0, sizeof(*s));
+    snprintf(s->mod_id, sizeof(s->mod_id), "%s", desc->mod_id ? desc->mod_id : "");
+    snprintf(s->name, sizeof(s->name), "%s", desc->name);
+    s->callback = desc->callback;
+    s->user_ctx = desc->user_ctx;
+    return FB_OK;
+}
+
+static int mcon_exec_stub(const char* line) {
+    (void)line;
+    return FB_OK;
+}
+
+static int mcon_is_open(void) { return 0; }
+
+static void mcon_writer_print(void* ctx, int level, const char* text) {
+    (void)ctx;
+    (void)level;
+    if (text) {
+        snprintf(g_mcon_out, sizeof(g_mcon_out), "%s", text);
+    }
+}
+
+static int mcon_invoke(const char* name, int argc, const char* const* argv) {
+    g_mcon_out[0] = '\0';
+    for (int i = 0; i < g_mcmd_count; ++i) {
+        if (strcmp(g_mcmd[i].name, name) == 0) {
+            fb_console_writer_v1_t w;
+            memset(&w, 0, sizeof(w));
+            w.struct_size = (uint32_t)sizeof(w);
+            w.print = mcon_writer_print;
+            return g_mcmd[i].callback(argc, argv, &w, g_mcmd[i].user_ctx);
+        }
+    }
+    return FB_ERR_NOT_FOUND;
+}
+
 static void test_mock_menu_sync_and_conflicts(
     const wchar_t* fpv_dll,
     const wchar_t* tw_dll,
     const wchar_t* drone_dll,
+    const wchar_t* qm_dll,
     const wchar_t* mock_libfpv_dll,
     const char*    tmp_dir)
 {
-    printf("[2] Testing Menu API registration, bidirectional sync & zero default binding conflicts...\n");
+    printf("[2] Testing Menu & Console API registration, bidirectional sync & zero default binding conflicts...\n");
 
     g_mset_count = 0;
     g_mact_count = 0;
+    g_mcmd_count = 0;
+    g_suppress_qm_syms = 0;
     memset(g_mem, 0, sizeof(g_mem));
     mock_reset_bus();
 
@@ -823,12 +981,17 @@ static void test_mock_menu_sync_and_conflicts(
     poke_u32(OFF_CLOCK + 4u, 22u);
     poke_u32(OFF_WEATHER, H_W0);
     poke_u32(OFF_WEATHER + 4u, H_W0);
+    poke_u32(OFF_QM_FLAGS, 0x01u); /* on_ground */
+    poke_f32(OFF_QM_CAM + 0x00u, 1.0f);
+    poke_f32(OFF_QM_CAM + 0x14u, 1.0f);
+    poke_f32(OFF_QM_CAM + 0x28u, 1.0f);
 
-    loaded_plugin_t fpv, tw, drone;
+    loaded_plugin_t fpv, tw, drone, qm;
     CHECK(load_plugin_dll(fpv_dll, &fpv));
     CHECK(load_plugin_dll(tw_dll, &tw));
     CHECK(load_plugin_dll(drone_dll, &drone));
-    if (!fpv.mod || !tw.mod || !drone.mod) {
+    CHECK(load_plugin_dll(qm_dll, &qm));
+    if (!fpv.mod || !tw.mod || !drone.mod || !qm.mod) {
         return;
     }
 
@@ -838,6 +1001,7 @@ static void test_mock_menu_sync_and_conflicts(
     snprintf(g_cfg_drone, sizeof(g_cfg_drone),
              "{\"libfpv_dll_path\":\"%s\",\"audio_enabled\":false,\"osd_window_enabled\":false}",
              jmock);
+    g_cfg_qm[0] = '\0';
 
     fb_core_services_v1_t svc = make_mock_services();
     fb_menu_api_v1_t menu;
@@ -852,15 +1016,26 @@ static void test_mock_menu_sync_and_conflicts(
     menu.save_user_config = mmenu_save_config;
     menu.is_menu_open = mmenu_is_open;
 
+    fb_console_api_v1_t console;
+    memset(&console, 0, sizeof(console));
+    console.struct_size = (uint32_t)sizeof(console);
+    console.abi_version = FB_CONSOLE_ABI_VERSION;
+    console.register_command = mcon_register_command;
+    console.exec = mcon_exec_stub;
+    console.is_console_open = mcon_is_open;
+
     CHECK(fpv.init(&svc) == FB_OK);
     CHECK(fpv.reg_menu != NULL && fpv.reg_menu(&menu) == FB_OK);
     CHECK(tw.init(&svc) == FB_OK);
     CHECK(tw.reg_menu != NULL && tw.reg_menu(&menu) == FB_OK);
     CHECK(drone.init(&svc) == FB_OK);
     CHECK(drone.reg_menu != NULL && drone.reg_menu(&menu) == FB_OK);
+    CHECK(qm.init(&svc) == FB_OK);
+    CHECK(qm.reg_menu != NULL && qm.reg_menu(&menu) == FB_OK);
+    CHECK(qm.reg_console != NULL && qm.reg_console(&console) == FB_OK);
 
-    /* Verify ZERO default keyboard or gamepad binding conflicts across all 4 mods */
-    CHECK(g_mact_count == 2 + 2 + 6 + 5); /* core(2) + fpv(2) + tw(6) + drone(5) */
+    /* Verify ZERO default keyboard or gamepad binding conflicts across all 5 mods */
+    CHECK(g_mact_count == 2 + 2 + 6 + 5 + 3); /* core(2) + fpv(2) + tw(6) + drone(5) + qm(3) */
     CHECK(mmenu_find_action("community.time_weather_control", "toggle_window") == NULL);
     for (int i = 0; i < g_mact_count; ++i) {
         for (int j = i + 1; j < g_mact_count; ++j) {
@@ -1008,12 +1183,72 @@ static void test_mock_menu_sync_and_conflicts(
     mmenu_fire_action("community.fpv_drone", "toggle_drone", 1);
     CHECK(mmenu_get_setting("community.fpv_drone", "drone_active", &fv) == FB_OK && fv.v.bool_val == 0);
 
+    /* --- Quake Movement Menu Sync, Custom Sliders, Readouts & Console Commands --- */
+    mmenu_fire_action("community.quake_movement", "toggle_movement", 1);
+    CHECK(mmenu_get_setting("community.quake_movement", "enabled", &fv) == FB_OK && fv.v.bool_val == 1);
+    mmenu_fire_action("community.quake_movement", "cycle_preset", 1);
+    CHECK(mmenu_get_setting("community.quake_movement", "preset", &fv) == FB_OK && fv.v.enum_val == 1); /* CPMA */
+
+    /* Console: qm preset apex -> syncs menu preset=3 & auto_bhop=0 */
+    {
+        const char* argv_apex[] = { "qm", "preset", "apex" };
+        CHECK(mcon_invoke("qm", 3, argv_apex) == FB_OK);
+        CHECK(mmenu_get_setting("community.quake_movement", "preset", &fv) == FB_OK && fv.v.enum_val == 3);
+        CHECK(mmenu_get_setting("community.quake_movement", "auto_bhop", &fv) == FB_OK && fv.v.bool_val == 0);
+
+        const char* argv_custom[] = { "qm", "preset", "custom" };
+        CHECK(mcon_invoke("qm", 3, argv_custom) == FB_OK);
+        const char* argv_set[] = { "qm", "set", "max_speed", "14.5" };
+        CHECK(mcon_invoke("qm", 4, argv_set) == FB_OK);
+        CHECK(mmenu_get_setting("community.quake_movement", "custom_max_speed", &fv) == FB_OK &&
+              fabs(fv.v.float_val - 14.5) < 1e-3);
+
+        const char* argv_bad[] = { "qm", "preset", "not_a_preset" };
+        CHECK(mcon_invoke("qm", 3, argv_bad) == FB_ERR_INVALID_ARG);
+        const char* argv_bad_p[] = { "qm", "set", "bogus_param", "1.0" };
+        CHECK(mcon_invoke("qm", 4, argv_bad_p) == FB_ERR_INVALID_ARG);
+
+        const char* argv_status[] = { "qm", "status" };
+        CHECK(mcon_invoke("qm", 2, argv_status) == FB_OK);
+        CHECK(strstr(g_mcon_out, "Custom") != NULL);
+        CHECK(strstr(g_mcon_out, "max=14.5") != NULL);
+        CHECK(strstr(g_mcon_out, "syms=resolved") != NULL);
+
+        const char* argv_tog[] = { "qm", "toggle" };
+        CHECK(mcon_invoke("qm", 2, argv_tog) == FB_OK);
+        CHECK(mmenu_get_setting("community.quake_movement", "enabled", &fv) == FB_OK && fv.v.bool_val == 0);
+        CHECK(mcon_invoke("qm", 2, argv_tog) == FB_OK);
+        CHECK(mmenu_get_setting("community.quake_movement", "enabled", &fv) == FB_OK && fv.v.bool_val == 1);
+    }
+
+    /* Live status & speed_readout callbacks */
+    {
+        fb_input_event_v1_t wev = make_ev(FB_DEV_KEYBOARD, 'W', FB_INPUT_PRESS, FB_MOD_NONE, 100);
+        (void)mock_emit_input(&wev);
+        mock_emit_frame(1.0 / 60.0);
+        CHECK(peek_f32(OFF_QM_VEL + 4u) > 1.5f);
+
+        mock_setting_slot_t* q_st = mmenu_find_setting("community.quake_movement", "status");
+        mock_setting_slot_t* q_sp = mmenu_find_setting("community.quake_movement", "speed_readout");
+        CHECK(q_st != NULL && q_st->on_status != NULL);
+        CHECK(q_sp != NULL && q_sp->on_status != NULL);
+        if (q_st && q_st->on_status && q_sp && q_sp->on_status) {
+            char buf[256];
+            q_st->on_status("status", buf, sizeof(buf), q_st->user_ctx);
+            CHECK(strstr(buf, "ON") != NULL && strstr(buf, "Custom") != NULL && strstr(buf, "LIVE") != NULL);
+            q_sp->on_status("speed_readout", buf, sizeof(buf), q_sp->user_ctx);
+            CHECK(strstr(buf, "Horiz:") != NULL && strstr(buf, "m/s") != NULL);
+        }
+    }
+
     fpv.shutdown();
     tw.shutdown();
     drone.shutdown();
+    qm.shutdown();
     FreeLibrary(fpv.mod);
     FreeLibrary(tw.mod);
     FreeLibrary(drone.mod);
+    FreeLibrary(qm.mod);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1113,6 +1348,7 @@ static void test_e2e_fireball_core(
     const wchar_t* fpv_dll,
     const wchar_t* tw_dll,
     const wchar_t* drone_dll,
+    const wchar_t* qm_dll,
     const wchar_t* mock_libfpv_dll,
     const wchar_t* tmp_wdir,
     const char*    tmp_adir)
@@ -1120,6 +1356,7 @@ static void test_e2e_fireball_core(
     printf("[3] Testing end-to-end inside fireball_core.dll (FIREBALL_HEADLESS=1)...\n");
     SetEnvironmentVariableW(L"FIREBALL_HEADLESS", L"1");
     SetEnvironmentVariableW(L"LIBFPV_DLL", mock_libfpv_dll);
+    g_suppress_qm_syms = 0;
 
     wchar_t mods_dir[MAX_PATH * 2];
     swprintf(mods_dir, sizeof(mods_dir) / sizeof(mods_dir[0]), L"%ls\\e2e_mods", tmp_wdir);
@@ -1132,6 +1369,7 @@ static void test_e2e_fireball_core(
     CHECK(copy_into_dir(fpv_dll, mods_dir, L"fpv_toggle.fbplugin.dll"));
     CHECK(copy_into_dir(tw_dll, mods_dir, L"time_weather.fbplugin.dll"));
     CHECK(copy_into_dir(drone_dll, mods_dir, L"fpv_drone.fbplugin.dll"));
+    CHECK(copy_into_dir(qm_dll, mods_dir, L"quake_movement.fbplugin.dll"));
 
     /* Write weather list + minimal fireball_bundle.fbin supplying time_weather config */
     char list_path[300], jlist[600], tw_cfg_json[1024];
@@ -1196,6 +1434,10 @@ static void test_e2e_fireball_core(
     poke_u32(OFF_CLOCK + 8u, 10u);
     poke_u32(OFF_WEATHER, H_W0);
     poke_u32(OFF_WEATHER + 4u, H_W0);
+    poke_u32(OFF_QM_FLAGS, 0x01u); /* on_ground */
+    poke_f32(OFF_QM_CAM + 0x00u, 1.0f);
+    poke_f32(OFF_QM_CAM + 0x14u, 1.0f);
+    poke_f32(OFF_QM_CAM + 0x28u, 1.0f);
 
     fb_host_api_v1_t api;
     memset(&api, 0, sizeof(api));
@@ -1325,11 +1567,55 @@ static void test_e2e_fireball_core(
     cb.on_input_event(&ev);
     CHECK(peek_u32(OFF_DRONE_CAM_OV) == 0u);
 
+    /* 3e3. quake_movement gamepad chords inside fireball_core.dll:
+     * RB + A toggles ON, RB + Y cycles to Deadlock (4 presses), RB + B dashes along +Y,
+     * and in_vehicle flag blocks velocity writes. */
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_PRESS, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_A, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_A, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    /* Cycle VQ3 -> CPMA -> Half-Life -> Apex -> Deadlock via RB + Y */
+    for (int i = 0; i < 4; ++i) {
+        ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_Y, FB_INPUT_PRESS, 0, ts += 10);
+        CHECK(cb.on_input_event(&ev) == 1);
+        ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_Y, FB_INPUT_RELEASE, 0, ts += 10);
+        cb.on_input_event(&ev);
+    }
+    /* Directional Dash via RB + B */
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_B, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_B, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    cb.on_frame_begin(130u, 1.0 / 60.0);
+    CHECK(peek_f32(OFF_QM_VEL + 4u) > 12.5f);
+
+    /* In-vehicle guard stops writes */
+    poke_f32(OFF_QM_VEL + 4u, 0.5f);
+    poke_u32(OFF_QM_FLAGS, 0x01u | 0x04u);
+    cb.on_frame_begin(131u, 1.0 / 60.0);
+    CHECK(fabsf(peek_f32(OFF_QM_VEL + 4u) - 0.5f) < 1e-4f);
+    poke_u32(OFF_QM_FLAGS, 0x01u);
+
+    /* Toggle quake_movement back OFF via RB + A */
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_PRESS, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_A, FB_INPUT_PRESS, 0, ts += 10);
+    CHECK(cb.on_input_event(&ev) == 1);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_A, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+    ev = make_ev(FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, FB_INPUT_RELEASE, 0, ts += 10);
+    cb.on_input_event(&ev);
+
     /* 3f. Headless Mod Menu navigation:
      * Plugins load alphabetically on NTFS:
      *   Tab 1: FPV Drone (libfpv)
      *   Tab 2: FPV Unlocker
-     *   Tab 3: Time & Weather
+     *   Tab 3: Quake Movement
+     *   Tab 4: Time & Weather
      */
     press_and_release(&cb, FB_DEV_KEYBOARD, 0x70u /* F1 */, FB_MOD_NONE, &ts);
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 1: FPV Drone */
@@ -1337,7 +1623,8 @@ static void test_e2e_fireball_core(
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);      /* row 1: start_in_fpv */
     press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_A, 0, &ts);              /* toggle start_in_fpv -> true (saved!) */
 
-    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 3: Time & Weather */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 3: Quake Movement */
+    press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_RIGHT_SHOULDER, 0, &ts); /* Tab 4: Time & Weather */
     for (int i = 0; i < 4; ++i) {
         press_and_release(&cb, FB_DEV_GAMEPAD, FB_PAD_DPAD_DOWN, 0, &ts);
     }
@@ -1391,6 +1678,7 @@ int wmain(int argc, wchar_t** argv) {
     const wchar_t* fpv_dll = NULL;
     const wchar_t* tw_dll = NULL;
     const wchar_t* drone_dll = NULL;
+    const wchar_t* qm_dll = NULL;
     const wchar_t* mock_libfpv_dll = NULL;
 
     for (int i = 1; i + 1 < argc; ++i) {
@@ -1402,13 +1690,15 @@ int wmain(int argc, wchar_t** argv) {
             tw_dll = argv[++i];
         } else if (wcscmp(argv[i], L"--fpv-drone") == 0) {
             drone_dll = argv[++i];
+        } else if (wcscmp(argv[i], L"--quake-movement") == 0) {
+            qm_dll = argv[++i];
         } else if (wcscmp(argv[i], L"--mock-libfpv") == 0) {
             mock_libfpv_dll = argv[++i];
         }
     }
 
-    if (!fpv_dll || !tw_dll || !drone_dll || !mock_libfpv_dll) {
-        fprintf(stderr, "Usage: fireball_mods_integration_test --fpv <dll> --time-weather <dll> --fpv-drone <dll> --mock-libfpv <dll> [--core <dll>]\n");
+    if (!fpv_dll || !tw_dll || !drone_dll || !qm_dll || !mock_libfpv_dll) {
+        fprintf(stderr, "Usage: fireball_mods_integration_test --fpv <dll> --time-weather <dll> --fpv-drone <dll> --quake-movement <dll> --mock-libfpv <dll> [--core <dll>]\n");
         return 2;
     }
 
@@ -1426,10 +1716,10 @@ int wmain(int argc, wchar_t** argv) {
     snprintf(work_a, sizeof(work_a), "%sfireball_mods_itest", tmp_a);
     CreateDirectoryW(work_w, NULL);
 
-    test_standalone_v1(fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_a);
-    test_mock_menu_sync_and_conflicts(fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_a);
+    test_standalone_v1(fpv_dll, tw_dll, drone_dll, qm_dll, mock_libfpv_dll, work_a);
+    test_mock_menu_sync_and_conflicts(fpv_dll, tw_dll, drone_dll, qm_dll, mock_libfpv_dll, work_a);
     if (core_dll) {
-        test_e2e_fireball_core(core_dll, fpv_dll, tw_dll, drone_dll, mock_libfpv_dll, work_w, work_a);
+        test_e2e_fireball_core(core_dll, fpv_dll, tw_dll, drone_dll, qm_dll, mock_libfpv_dll, work_w, work_a);
     } else {
         printf("[3] Skipped fireball_core.dll E2E (--core not provided)\n");
     }
